@@ -91,8 +91,8 @@ def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: st
         base_distance = scenario["base_distance"]
         base_duration = scenario["base_duration"]
     else:
-        base_distance = 1200
-        base_duration = 900
+        base_distance = 1300
+        base_duration = 950
 
     if waypoint and not scenario:
         base_distance += 320
