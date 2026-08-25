@@ -55,8 +55,14 @@ def generate_narrative(route_data: dict, mode: str) -> str:
 
 
 def _dalian_narrative(route_data: dict, mode: str) -> str | None:
-    origin = _normalize(coord=route_data.get("steps", [{}])[0].get("road", ""))
-    destination = _normalize(coord=route_data.get("steps", [{}])[-1].get("road", ""))
+    polyline = route_data.get("polyline", "")
+    coordinates = [point for point in str(polyline).split(";") if point]
+
+    if len(coordinates) < 2:
+        return None
+
+    origin = _normalize(coord=coordinates[0])
+    destination = _normalize(coord=coordinates[-1])
     if not origin or not destination:
         return None
 

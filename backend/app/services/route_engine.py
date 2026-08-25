@@ -98,12 +98,10 @@ def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: st
         base_distance += 320
         base_duration += 180
 
-    if mode == "+15":
-        base_distance += scenario.get("extra_distance", {}).get(mode, 220) if scenario else 220
-        base_duration += scenario.get("extra_duration", {}).get(mode, 120) if scenario else 120
-    elif mode == "roam":
-        base_distance += scenario.get("extra_distance", {}).get(mode, 620) if scenario else 620
-        base_duration += scenario.get("extra_duration", {}).get(mode, 340) if scenario else 340
+    if waypoint:
+        effective_mode = mode or "+15"
+        base_distance += scenario.get("extra_distance", {}).get(effective_mode, 220) if scenario else 220
+        base_duration += scenario.get("extra_duration", {}).get(effective_mode, 120) if scenario else 120
 
     start = _parse_lng_lat(origin)
     end = _parse_lng_lat(destination)
@@ -126,12 +124,15 @@ def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: st
         polyline = ";".join(f"{lng},{lat}" for lng, lat in points)
 
     return {
+        "origin": origin,
+        "destination": destination,
+        "demo_mode": scenario is not None,
         "distance": base_distance,
         "duration": base_duration,
         "steps": [
             {
                 "instruction": "按推荐路线行走",
-                "road": "模拟路线",
+                "road": origin,
                 "distance": str(base_distance),
                 "duration": str(base_duration),
             }
