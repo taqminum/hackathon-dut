@@ -156,5 +156,127 @@
 - 地图加载失败：展示静态路线图或截图。
 - 浏览器兼容问题：优先 Chrome / Edge。
 
+---
+
+## 每人任务清单
+
+### 成员 A：前端负责人
+- `webapp/src/views/HomeView.vue`：输入页与提交逻辑
+- `webapp/src/views/ResultView.vue`：结果页与状态展示
+- `webapp/src/components/ExploreModeSelector.vue`：模式切换
+- `webapp/src/utils/map-loader.js`：高德地图脚本加载
+- `webapp/src/api.js`：接口封装
+- 前端异常态、空结果、加载态
+- 前端测试与本地验证
+
+### 成员 B：后端负责人
+- `backend/app/main.py`：服务入口与 CORS
+- `backend/app/routes/api.py`：推荐接口
+- `backend/app/services/route_engine.py`：高德路径规划
+- `backend/app/services/detour_calculator.py`：绕行时间
+- `backend/app/services/poi_explorer.py`：POI 搜索
+- `backend/app/services/scorer.py`：规则打分
+- `backend/app/services/narrative.py`：LLM 叙事与降级
+- 后端测试与接口验证
+
+### 成员 C：项目/演示/文档负责人
+- `docs/superpowers/plans/2026-08-25-serendipity-navigation.md`：计划维护
+- `docs/superpowers/specs/team.md`：分工与规则
+- `README.md`：快速开始与演示说明
+- 演示脚本、场景数据、备用方案
+- 缺陷记录、演示环境、现场问题跟踪
+
+---
+
+## 优先级与依赖
+
+### P0
+- 接口字段固定
+- 后端 `/health` 可用
+- 前端可输入并展示结果
+- 大连本地演示场景可用
+
+### P1
+- 高德地图展示路线与 POI
+- 异常态与降级展示
+- 3 个演示场景可稳定复现
+
+### P2
+- LLM 叙事增强
+- 移动端体验优化
+- App 壳打包
+
+### 依赖关系
+- 前端依赖：接口返回字段
+- 后端依赖：高德 API Key 配置
+- 项目依赖：前后端联调结果
+
+---
+
+## 接口字段负责人
+
+### `/health`
+- 负责人：成员 B
+- 字段：`status`
+
+### `/api/route/recommend`
+- 负责人：成员 B
+- 请求：`origin`、`destination`、`mode`
+- 返回：`baseline_minutes`、`detour_minutes`、`score`、`pois`、`narrative`
+- 前端使用负责人：成员 A
+
+---
+
+## 阻塞与缺陷跟踪
+
+### 跟踪方式
+- 用简单文本清单记录：`docs/superpowers/specs/blockers.md`
+- 每条包含：描述、负责人、影响、状态
+
+### 阻塞升级
+- 同一阻塞超过 2 次同步仍未解决，升级到成员 C 协调
+- 外部依赖阻塞超过 1 天，启用备用方案
+
+### 缺陷分类
+- `P0`：演示无法进行
+- `P1`：核心体验受损
+- `P2`：体验优化
+
+---
+
+## 合并与评审流程
+
+### 提交流程
+- 先 rebase main
+- 提交信息按 `type(scope): 简述`
+- PR 描述写明：改了什么、怎么验证、是否影响演示
+
+### 评审要求
+- 前端 PR：成员 A 评审或至少成员 A 确认
+- 后端 PR：成员 B 评审或至少成员 B 确认
+- 文档 PR：成员 C 评审
+- 演示前所有 PR 需合并并本地验证
+
+---
+
+## 交付物清单
+
+### 代码
+- `backend/` 可启动服务
+- `webapp/` 可启动页面
+- 前后端基础测试通过
+
+### 文档
+- 计划文档
+- 分工文档
+- README
+- 测试清单
+- 演示脚本
+
+### 演示
+- 3 个大连场景
+- 离线/弱网备用方案
+- 现场启动步骤
+
 
 
