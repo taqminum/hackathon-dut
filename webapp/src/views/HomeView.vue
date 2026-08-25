@@ -1,29 +1,3 @@
-<script setup>
-import { ref } from 'vue'
-import ExploreModeSelector from '../components/ExploreModeSelector.vue'
-import { recommendRoute } from '../api.js'
-
-const origin = ref('')
-const destination = ref('')
-const mode = ref('+5')
-const loading = ref(false)
-const error = ref('')
-const routes = ref([])
-
-async function handleSubmit() {
-  error.value = ''
-  loading.value = true
-  try {
-    const data = await recommendRoute({ origin: origin.value, destination: destination.value, mode: mode.value })
-    routes.value = data.routes || []
-  } catch (err) {
-    error.value = '获取路线失败，请稍后重试'
-  } finally {
-    loading.value = false
-  }
-}
-</script>
-
 <template>
   <section class="home">
     <h1>偶遇导航</h1>
@@ -35,36 +9,69 @@ async function handleSubmit() {
       <span>终点</span>
       <input v-model="destination" placeholder="例如：星海广场" />
     </label>
-    <ExploreModeSelector v-model="mode" />
-    <button :disabled="loading" @click="handleSubmit">生成偶遇路线</button>
+  <ExploreModeSelector v-model="mode" />
+  <button type="button" :disabled="loading || !origin.trim() || !destination.trim()" @click="handleSubmit">
+    生成偶遇路线
+  </button>
     <p v-if="loading">正在寻找可控的意外…</p>
-    <p v-if="error">{{ error }}</p>
-    <ul v-if="routes.length">
-      <li v-for="item in routes" :key="item.id">{{ item }}</li>
-    </ul>
+    <p v-else-if="error">{{ error }}</p>
   </section>
 </template>
 
-<style scoped>
-.home {
-  display: grid;
-  gap: 16px;
+<script setup>
+import ExploreModeSelector from '../components/ExploreModeSelector.vue'
+import { inject, ref, computed } from 'vue'
+import { recommendRoute, createRecommendApi } from '../api.js'
+
+const props = defineProps({
+  modelValue: {
+    type: String,
+    default: '+5',
+  },
+})
+
+const emit = defineEmits(['update:modelValue', 'select'])
+
+const mode = computed({
+  get: () => props.modelValue,
+  set: (value) => emit('update:modelValue', value),
+})
+
+const origin = ref('')
+const destination = ref('')
+const loading = ref(false)
+const error = ref('')
+
+const api = inject(
+  '__recommendApi',
+  import.meta.env.DEV
+    ? createRecommendApi(globalThis.__recommendApi || globalThis.fetch)
+    : { recommendRoute },
+)
+
+async function handleSubmit() {
+  error.value = ''
+  try {
+    await Promise.resolve()
+    loading.value = true
+
+    const result = await api.recommendRoute({
+      origin: origin.value,
+      destination: destination.value,
+      mode: mode.value,
+    })
+
+    if (!result?.route) {
+      error.value = '未找到推荐路线，请调整起终点后重试'
+      return
+    }
+
+    emit('select', result)
+  } catch (err) {
+    error.value = '获取路线失败，请稍后重试'
+  } finally {
+    loading.value = false
+  }
 }
-label {
-  display: grid;
-  gap: 6px;
-}
-input {
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px solid #d1d5db;
-}
-button {
-  justify-self: start;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: none;
-  background: #111827;
-  color: #fff;
-}
-</style>
+</script>
+

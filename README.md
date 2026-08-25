@@ -8,3 +8,9 @@ Hackathon 项目：先做网页版，再尝试打包为 Android App 壳。
 
 - 后端：见 `backend/README.md`
 - 网页端：见 `webapp/README.md`
+
+## 文档索引
+
+- 计划与边界：`docs/superpowers/plans/2026-08-25-serendipity-navigation.md`
+- 团队分工：`docs/superpowers/specs/team.md`
+- 当前进展与待确认项：`docs/superpowers/status/2026-08-25.md`

@@ -4,12 +4,23 @@ from app.services.poi_explorer import explore_pois_along_route
 
 def test_explore_pois_along_route_filters_by_type():
     with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {
             "pois": [
                 {"type": "餐饮", "name": "A", "distance": "50", "rating": 4.5},
                 {"type": "景点", "name": "B", "distance": "200", "rating": 4.0},
             ]
         }
-        pois = explore_pois_along_route("116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300)
-        assert len(pois) == 1
-        assert pois[0]["name"] == "A"
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route("116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300)
+            assert len(pois) == 1
+            assert pois[0]["name"] == "A"
+            mock_get.assert_called_once()
+
+
+def test_explore_pois_along_route_uses_fallback_when_no_match():
+    pois = explore_pois_along_route("116.397428,39.90923", "116.407526,39.90403", ["影院"], 300)
+
+    assert len(pois) == 2
+    assert {poi["name"] for poi in pois} == {"偶遇小店", "街角展览"}

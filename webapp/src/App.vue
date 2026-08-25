@@ -1,11 +1,13 @@
 <script setup>
 import { ref } from 'vue'
 import HomeView from './views/HomeView.vue'
+import ResultView from './views/ResultView.vue'
 
 const currentView = ref('home')
 const selectedRoute = ref(null)
 
 function onRouteSelected(route) {
+  if (!route) return
   selectedRoute.value = route
   currentView.value = 'result'
 }
@@ -19,10 +21,7 @@ function onBack() {
 <template>
   <main>
     <HomeView v-if="currentView === 'home'" @select="onRouteSelected" />
-    <section v-else>
-      <button class="back-button" type="button" @click="onBack">返回首页</button>
-      <p>推荐结果页占位：{{ selectedRoute }}</p>
-    </section>
+    <ResultView v-else :result="selectedRoute" @back="onBack" />
   </main>
 </template>
 
