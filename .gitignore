@@ -1,0 +1,35 @@
+# Dependencies
+node_modules
+__pycache__
+.venv
+venv
+.env
+.env.*
+dist
+build
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+webapp/dist
+webapp/.vite
+webapp/.output
+
+# Python
+backend/.venv
+backend/__pycache__
+backend/.pytest_cache
+backend/.mypy_cache
+backend/.ruff_cache
