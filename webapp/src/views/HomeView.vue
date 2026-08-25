@@ -9,12 +9,25 @@
       <span>终点</span>
       <input v-model="destination" placeholder="例如：星海广场" />
     </label>
-  <ExploreModeSelector v-model="mode" />
-  <button type="button" :disabled="loading || !origin.trim() || !destination.trim()" @click="handleSubmit">
+    <ExploreModeSelector v-model="mode" />
+    <button type="button" :disabled="loading || !origin.trim() || !destination.trim()" @click="handleSubmit">
     生成偶遇路线
-  </button>
+    </button>
     <p v-if="loading">正在寻找可控的意外…</p>
     <p v-else-if="error">{{ error }}</p>
+
+    <div class="demo-scenarios">
+      <span class="demo-title">快速体验：</span>
+      <button type="button" @click="fillDemo('121.6068,38.9180', '121.5854,38.9325', '+15')">
+        大工 -> 星海广场（+15）
+      </button>
+      <button type="button" @click="fillDemo('121.6281,38.9329', '121.6542,38.9337', 'roam')">
+        东港 -> 老虎滩（roam）
+      </button>
+      <button type="button" @click="fillDemo('121.5899,38.9148', '121.6075,38.9094', '+5')">
+        西安路 -> 傅家庄（+5）
+      </button>
+    </div>
   </section>
 </template>
 
@@ -73,5 +86,26 @@ async function handleSubmit() {
     loading.value = false
   }
 }
+
+function fillDemo(newOrigin, newDestination, newMode) {
+  origin.value = newOrigin
+  destination.value = newDestination
+  mode.value = newMode
+  handleSubmit()
+}
 </script>
+
+<style scoped>
+.demo-scenarios {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.demo-title {
+  color: #374151;
+}
+.demo-scenarios button {
+  justify-self: start;
+}
+</style>
 

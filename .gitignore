@@ -5,8 +5,8 @@ __pycache__
 venv
 .env
 .env.*
-dist
-build
+/dist
+/build
 
 # IDE / OS
 .vscode
@@ -23,7 +23,6 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Build output
-webapp/dist
 webapp/.vite
 webapp/.output
 

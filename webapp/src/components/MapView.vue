@@ -21,7 +21,7 @@ const poiMarkers = []
 function initMap() {
   if (!container.value || map) return
 
-  map = L.map(container.value).setView([39.90403, 116.397428], 13)
+  map = L.map(container.value).setView([38.918, 121.601], 12)
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
   }).addTo(map)
