@@ -1,0 +1,78 @@
+/* ==========================================================================
+   Bauhaus 设计令牌
+   三原色 + 黑白灰，硬边、无圆角、粗描边、实心投影。
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* 三原色 */
+  --bh-red: #d8352a;
+  --bh-blue: #22409a;
+  --bh-yellow: #f5c518;
+
+  /* 中性色 */
+  --bh-ink: #14100e;
+  --bh-ink-soft: #4a4340;
+  --bh-paper: #f4f1ea;
+  --bh-paper-2: #e9e3d5;
+  --bh-white: #ffffff;
+
+  /* 语义色 */
+  --bh-danger: var(--bh-red);
+  --bh-accent: var(--bh-blue);
+  --bh-highlight: var(--bh-yellow);
+
+  /* 结构 */
+  --bh-line: 3px;
+  --bh-line-thick: 6px;
+  --bh-shadow: 6px 6px 0 var(--bh-ink);
+  --bh-shadow-sm: 4px 4px 0 var(--bh-ink);
+  --bh-shadow-lg: 10px 10px 0 var(--bh-ink);
+  --bh-shadow-red: 6px 6px 0 var(--bh-red);
+  --bh-shadow-blue: 6px 6px 0 var(--bh-blue);
+  --bh-shadow-yellow: 6px 6px 0 var(--bh-yellow);
+
+  /* 间距（4 的倍数） */
+  --bh-1: 4px;
+  --bh-2: 8px;
+  --bh-3: 12px;
+  --bh-4: 16px;
+  --bh-5: 24px;
+  --bh-6: 32px;
+  --bh-7: 48px;
+  --bh-8: 64px;
+
+  /* 字体：优先本地几何无衬线，离线演示也不掉字形 */
+  --bh-font: 'Futura', 'Century Gothic', 'Avenir Next', 'Poppins', 'Helvetica Neue',
+    Helvetica, Arial, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --bh-font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono',
+    monospace;
+
+  /* 字号 */
+  --bh-text-xs: 11px;
+  --bh-text-sm: 13px;
+  --bh-text-md: 15px;
+  --bh-text-lg: 19px;
+  --bh-text-xl: 26px;
+  --bh-text-2xl: 38px;
+  --bh-text-3xl: 56px;
+  --bh-text-4xl: 76px;
+
+  /* 字距：全大写标签用大字距 */
+  --bh-track-label: 0.18em;
+  --bh-track-title: -0.02em;
+
+  --bh-transition: 120ms linear;
+  --bh-z-overlay: 50;
+  --bh-z-dropdown: 30;
+
+  /* 内容最大宽度 */
+  --bh-max: 1120px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bh-transition: 0ms;
+  }
+}
