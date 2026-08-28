@@ -49,7 +49,6 @@ function makeApi(overrides = {}) {
     suggestPlaces: vi.fn(async () => []),
     checkHealth: vi.fn(async () => ({ online: true })),
     listTrips: vi.fn(async () => []),
-    fetchPoiDetail: vi.fn(async () => null),
     ...overrides,
   }
 }

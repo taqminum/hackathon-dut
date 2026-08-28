@@ -20,7 +20,6 @@ function makeApi(overrides = {}) {
     saveTrip: vi.fn(async () => ({ ok: true })),
     sendFeedback: vi.fn(async () => ({ ok: true })),
     listTrips: vi.fn(async () => []),
-    fetchPoiDetail: vi.fn(async () => null),
     ...overrides,
   }
 }

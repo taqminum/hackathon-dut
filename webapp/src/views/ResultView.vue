@@ -35,6 +35,12 @@ const request = computed(() => props.result?.request ?? null)
 const baselineMinutes = computed(() => formatMinutes(props.result?.baseline_minutes))
 const detourMinutes = computed(() => formatDetour(props.result?.detour_minutes))
 const score = computed(() => formatScore(props.result?.score))
+// 绕行 0 分钟是最好的结果，但「额外时间 0 分钟」读起来像功能没生效。
+// 大号数字保持是数字（tile__number 用 --bh-text-2xl，塞进中文会撑破格子），
+// 改由 hint 那行把 0 解释成好消息。
+const detourHint = computed(() =>
+  detourMinutes.value === '0' ? '几乎不耽误，顺路就到' : '为探索多花的时间',
+)
 const narrative = computed(() => props.result?.narrative ?? '')
 const pois = computed(() => (Array.isArray(props.result?.pois) ? props.result.pois : []))
 const steps = computed(() => (Array.isArray(route.value?.steps) ? route.value.steps : []))
@@ -122,7 +128,7 @@ const saveLabel = computed(() => {
 
         <div class="result__tiles">
           <StatTile label="基准时长" :value="baselineMinutes" unit="分钟" color="ink" hint="最快路线预计用时" />
-          <StatTile label="额外时间" :value="detourMinutes" unit="分钟" color="red" hint="为探索多花的时间" />
+          <StatTile label="额外时间" :value="detourMinutes" unit="分钟" color="red" :hint="detourHint" />
           <StatTile label="总计" :value="totalMinutes" unit="分钟" color="paper" hint="基准加绕行" />
           <StatTile label="全程距离" :value="distance" color="blue" hint="推荐路线长度" />
         </div>

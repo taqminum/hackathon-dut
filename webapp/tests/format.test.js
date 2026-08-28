@@ -59,6 +59,13 @@ describe('format utils', () => {
     expect(scoreToPercent(null)).toBe(0)
   })
 
+  // 原来所有用例都显式传 max，默认值没人钉住，于是它悄悄停在 10，
+  // 而 ScoreMeter 已经改成 7 —— 满分路线只能填到 70%。这里钉住默认值。
+  it('defaults max to the scorer reachable ceiling', () => {
+    expect(scoreToPercent(7)).toBe(100)
+    expect(scoreToPercent(3.5)).toBe(50)
+  })
+
   it('cycles through the three primary colors', () => {
     expect(colorForIndex(0)).toBe('red')
     expect(colorForIndex(1)).toBe('blue')

@@ -109,16 +109,6 @@ describe('optional endpoints', () => {
     await expect(api.listTrips()).resolves.toEqual([])
   })
 
-  it('returns null when a poi detail is unavailable', async () => {
-    const api = createRecommendApi(async () => fail(404))
-    await expect(api.fetchPoiDetail('p1')).resolves.toBe(null)
-
-    const client = vi.fn()
-    const guard = createRecommendApi(client)
-    await expect(guard.fetchPoiDetail('')).resolves.toBe(null)
-    expect(client).not.toHaveBeenCalled()
-  })
-
   it('never throws from sendFeedback', async () => {
     const api = createRecommendApi(async () => {
       throw new Error('offline')

@@ -9,7 +9,6 @@
  * 以下接口后端尚未定稿，前端按使用意图先写好请求；
  * 拿不到响应时统一降级，不阻塞主流程（见 withFallback）。
  *   GET  /api/place/suggest?keyword=&city=   地点联想
- *   GET  /api/poi/:id                        POI 详情
  *   POST /api/trip/save                      收藏路线
  *   GET  /api/trip/list                      收藏列表
  *   POST /api/feedback                       路线反馈（喜欢 / 不喜欢）
@@ -113,21 +112,6 @@ export async function suggestPlaces({ keyword, city = '大连' }, client = globa
   }, [])
 }
 
-/** POI 详情。后端未定稿，失败返回 null，界面只展示列表里已有的字段 */
-export async function fetchPoiDetail(poiId, client = globalThis.fetch) {
-  if (!poiId) return null
-
-  return withFallback(async () => {
-    const response = await withTimeout(
-      client,
-      buildUrl(`/poi/${encodeURIComponent(poiId)}`),
-      { method: 'GET' },
-      8000,
-    )
-    return parse(response, 'POI 详情获取失败')
-  }, null)
-}
-
 /** 收藏当前路线。后端未定稿，失败返回 { ok: false } 让界面提示稍后重试 */
 export async function saveTrip(payload, client = globalThis.fetch) {
   return withFallback(async () => {
@@ -172,7 +156,6 @@ export function createRecommendApi(client = globalThis.fetch) {
     recommendRoute: (payload) => recommendRoute(payload, client),
     checkHealth: () => checkHealth(client),
     suggestPlaces: (payload) => suggestPlaces(payload, client),
-    fetchPoiDetail: (poiId) => fetchPoiDetail(poiId, client),
     saveTrip: (payload) => saveTrip(payload, client),
     listTrips: () => listTrips(client),
     sendFeedback: (payload) => sendFeedback(payload, client),
@@ -185,7 +168,6 @@ export const defaultApi = {
   recommendRoute: (payload) => recommendRoute(payload),
   checkHealth: () => checkHealth(),
   suggestPlaces: (payload) => suggestPlaces(payload),
-  fetchPoiDetail: (poiId) => fetchPoiDetail(poiId),
   saveTrip: (payload) => saveTrip(payload),
   listTrips: () => listTrips(),
   sendFeedback: (payload) => sendFeedback(payload),

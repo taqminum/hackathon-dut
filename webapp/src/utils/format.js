@@ -52,8 +52,11 @@ export function formatDuration(seconds) {
   return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`
 }
 
-/** 评分 0~10 映射为 0~100 的进度百分比 */
-export function scoreToPercent(value, max = 10) {
+/** 评分映射为 0~100 的进度百分比。
+ * 默认 max 与 ScoreMeter 一致（后端 scorer 的可达上界 7.0，见 ScoreMeter.vue）。
+ * ScoreMeter 总是显式传 props.max，这个默认值只影响别的调用方 ——
+ * 留着 10 会让下一个人拿到「最好的结果也只填到 70%」的进度条。 */
+export function scoreToPercent(value, max = 7) {
   const num = toNumber(value)
   if (num === null) return 0
   return Math.min(100, Math.max(0, Math.round((num / max) * 100)))
