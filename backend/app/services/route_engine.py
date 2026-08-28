@@ -1,4 +1,6 @@
 import os
+from math import asin, cos, radians, sin, sqrt
+
 import requests
 
 WALKING_URL = "https://restapi.amap.com/v3/direction/walking"
@@ -65,20 +67,31 @@ def get_candidate_routes(origin: str, destination: str, mode: str, waypoint: str
             response = requests.get(WALKING_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
-            paths = data.get("route", {}).get("paths", [])
-            if paths:
+            route_data = data.get("route") if isinstance(data, dict) else None
+            paths = route_data.get("paths", []) if isinstance(route_data, dict) else []
+            if isinstance(paths, list):
                 routes = []
                 for path in paths:
+                    if not isinstance(path, dict):
+                        continue
+                    try:
+                        distance = int(path.get("distance", 0))
+                        duration = int(path.get("duration", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if distance <= 0 or duration <= 0:
+                        continue
                     routes.append(
                         {
-                            "distance": int(path.get("distance", 0)),
-                            "duration": int(path.get("duration", 0)),
+                            "distance": distance,
+                            "duration": duration,
                             "steps": path.get("steps", []),
                             "polyline": path.get("polyline", ""),
                         }
                     )
-                return routes
-        except requests.RequestException:
+                if routes:
+                    return routes
+        except (requests.RequestException, TypeError, ValueError, AttributeError):
             pass
 
     return [_build_fallback_route(origin, destination, mode, waypoint)]
@@ -86,26 +99,30 @@ def get_candidate_routes(origin: str, destination: str, mode: str, waypoint: str
 
 def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: str | None) -> dict:
     scenario = _select_dalian_scenario(origin, destination)
+    start = _parse_lng_lat(origin)
+    end = _parse_lng_lat(destination)
+    mid = _parse_lng_lat(waypoint) if waypoint else None
 
     if scenario:
         base_distance = scenario["base_distance"]
         base_duration = scenario["base_duration"]
     else:
-        base_distance = 1300
-        base_duration = 950
+        direct_distance = _haversine_meters(start, end)
+        if direct_distance > 50_000:
+            raise ValueError("fallback route is too long")
 
-    if waypoint and not scenario:
-        base_distance += 320
-        base_duration += 180
+        route_distance = direct_distance
+        if mid:
+            route_distance = _haversine_meters(start, mid) + _haversine_meters(mid, end)
+        base_distance = max(1, round(route_distance * 1.3))
+        base_duration = max(1, round(base_distance / 1.35))
 
-    if waypoint:
+    if waypoint and scenario:
         effective_mode = mode or "+15"
-        base_distance += scenario.get("extra_distance", {}).get(effective_mode, 220) if scenario else 220
-        base_duration += scenario.get("extra_duration", {}).get(effective_mode, 120) if scenario else 120
-
-    start = _parse_lng_lat(origin)
-    end = _parse_lng_lat(destination)
-    mid = _parse_lng_lat(waypoint) if waypoint else None
+        extra_distance = (scenario or {}).get("extra_distance") or {}
+        extra_duration = (scenario or {}).get("extra_duration") or {}
+        base_distance += extra_distance.get(effective_mode, 220)
+        base_duration += extra_duration.get(effective_mode, 120)
 
     points = [start]
     if mid:
@@ -117,11 +134,11 @@ def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: st
         if mid:
             waypoint_index = 2
             if waypoint_index <= len(scenario_points):
-                scenario_points.insert(waypoint_index, f"{mid[0]},{mid[1]}")
+                scenario_points.insert(waypoint_index, [mid[0], mid[1]])
 
-        polyline = ";".join(f"{lng},{lat}" for lng, lat in scenario_points)
+        polyline = ";".join(f"{float(lng):.4f},{float(lat):.4f}" for lng, lat in scenario_points)
     else:
-        polyline = ";".join(f"{lng},{lat}" for lng, lat in points)
+        polyline = ";".join(f"{lng:.4f},{lat:.4f}" for lng, lat in points)
 
     return {
         "origin": origin,
@@ -148,11 +165,34 @@ def _parse_lng_lat(coord: str | None) -> tuple[float, float]:
     return float(lng), float(lat)
 
 
+def _haversine_meters(start: tuple[float, float], end: tuple[float, float]) -> float:
+    start_lng, start_lat = map(radians, start)
+    end_lng, end_lat = map(radians, end)
+    delta_lng = end_lng - start_lng
+    delta_lat = end_lat - start_lat
+    value = sin(delta_lat / 2) ** 2 + cos(start_lat) * cos(end_lat) * sin(delta_lng / 2) ** 2
+    return 6_371_000 * 2 * asin(sqrt(value))
+
+
+def _try_parse_coord(coord: str | None) -> str | None:
+    if not coord:
+        return None
+    try:
+        lng, lat = str(coord).split(",", 1)
+        return f"{float(lng):.4f},{float(lat):.4f}"
+    except ValueError:
+        return None
+
+
 def _select_dalian_scenario(origin: str, destination: str) -> dict | None:
-    route_key = f"{_normalize(origin)}->{_normalize(destination)}"
+    direct_key = f"{_normalize(origin)}->{_normalize(destination)}"
     reverse_key = f"{_normalize(destination)}->{_normalize(origin)}"
 
-    selected = DALIAN_SCENARIOS.get(route_key) or DALIAN_SCENARIOS.get(reverse_key)
+    selected = DALIAN_SCENARIOS.get(direct_key)
+    reversed_route = False
+    if not selected:
+        selected = DALIAN_SCENARIOS.get(reverse_key)
+        reversed_route = selected is not None
 
     if not selected:
         return None
@@ -161,6 +201,8 @@ def _select_dalian_scenario(origin: str, destination: str) -> dict | None:
     normalized["polyline"] = [
         list(map(float, point.split(","))) for point in selected["polyline"]
     ]
+    if reversed_route:
+        normalized["polyline"].reverse()
     return normalized
 
 

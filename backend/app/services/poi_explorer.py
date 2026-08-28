@@ -1,18 +1,22 @@
 import os
 import requests
 
+from app.services.geocoder import resolve_location
+
 POI_URL = "https://restapi.amap.com/v3/place/around"
 
 
 def explore_pois_along_route(origin: str, destination: str, types: list[str], radius: int = 300) -> list[dict]:
-    lng1, lat1 = origin.split(",")
-    lng2, lat2 = destination.split(",")
-    mid_lng = (float(lng1) + float(lng2)) / 2
-    mid_lat = (float(lat1) + float(lat2)) / 2
+    lng1, lat1 = resolve_location(origin).split(",", 1)
+    lng2, lat2 = resolve_location(destination).split(",", 1)
+
+    lng1, lat1, lng2, lat2 = map(float, (lng1, lat1, lng2, lat2))
+    mid_lng = (lng1 + lng2) / 2
+    mid_lat = (lat1 + lat2) / 2
 
     params = {
         "location": f"{mid_lng},{mid_lat}",
-        "types": "餐饮|景点|购物",
+        "types": "|".join(types),
         "radius": radius,
         "offset": 10,
         "page": 1,
@@ -27,9 +31,11 @@ def explore_pois_along_route(origin: str, destination: str, types: list[str], ra
             response = requests.get(POI_URL, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
-            pois = data.get("pois", [])
+            pois = data.get("pois", []) if isinstance(data, dict) else []
             filtered = []
             for poi in pois:
+                if not isinstance(poi, dict):
+                    continue
                 poi_type = poi.get("type", "")
                 if any(t in poi_type for t in types):
                     filtered.append(
@@ -43,25 +49,11 @@ def explore_pois_along_route(origin: str, destination: str, types: list[str], ra
                     )
             if filtered:
                 return filtered
-        except requests.RequestException:
+        except (requests.RequestException, TypeError, ValueError, AttributeError):
             pass
 
-    return _dalian_fallback_pois(origin, destination) or [
-        {
-            "name": "偶遇小店",
-            "type": "餐饮",
-            "distance": "120",
-            "rating": 4.2,
-            "location": f"{mid_lng},{mid_lat}",
-        },
-        {
-            "name": "街角展览",
-            "type": "景点",
-            "distance": "260",
-            "rating": 4.5,
-            "location": f"{mid_lng + 0.0015},{mid_lat + 0.0015}",
-        },
-    ]
+    fallback = _dalian_fallback_pois(origin, destination) or []
+    return [poi for poi in fallback if any(t in poi.get("type", "") for t in types)]
 
 
 DALIAN_POI_SCENARIOS = {
