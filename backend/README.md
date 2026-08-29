@@ -17,8 +17,10 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --env-file .env
 ```
+
+先把 `backend/.env` 里的 `AMAP_KEY` 填上，再启动后端。
 
 ## 测试
 

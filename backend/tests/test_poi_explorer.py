@@ -47,5 +47,6 @@ def test_explore_pois_along_route_discards_malformed_remote_pois():
             "distance": None,
             "rating": 0,
             "location": "120.1,30.2",
+            "coordinate_system": "gcj02",
         }
     ]

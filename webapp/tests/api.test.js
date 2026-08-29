@@ -45,6 +45,20 @@ describe('recommendRoute', () => {
     )
   })
 
+  it('keeps structured backend details on ambiguous place errors', async () => {
+    const detail = {
+      code: 'AMBIGUOUS_LOCATION',
+      location: '东港',
+      candidates: [{ name: '东港音乐喷泉广场', location: '121.6753,38.9307' }],
+    }
+    const api = createRecommendApi(async () => fail(409, detail))
+
+    await expect(api.recommendRoute({ origin: '东港', destination: '老虎滩' })).rejects.toMatchObject({
+      status: 409,
+      detail,
+    })
+  })
+
   it('throws a generic message when there is no detail', async () => {
     const api = createRecommendApi(async () => fail(500))
     await expect(api.recommendRoute({ origin: 'a', destination: 'b' })).rejects.toThrow(
@@ -85,7 +99,14 @@ describe('suggestPlaces', () => {
     )
 
     await expect(api.suggestPlaces({ keyword: '星海' })).resolves.toEqual([
-      { name: '星海广场', address: '沙河口区', location: '121.5854,38.9325' },
+      {
+        name: '星海广场',
+        address: '沙河口区',
+        location: '121.5854,38.9325',
+        type: '',
+        coordinate_system: '',
+        confidence: null,
+      },
     ])
   })
 

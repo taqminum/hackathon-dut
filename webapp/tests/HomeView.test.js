@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import HomeView from '../src/views/HomeView.vue'
+import PlaceInput from '../src/components/PlaceInput.vue'
 import { API_KEY } from '../src/composables/useApi.js'
 
 const RESULT = {
@@ -50,10 +51,22 @@ describe('HomeView', () => {
 
     expect(submit.attributes('disabled')).toBeDefined()
 
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
     await wrapper.findAll('input')[0].setValue('大连理工大学')
-    expect(submit.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('请先从联想结果中选择准确的起点，或输入坐标')
 
     await wrapper.findAll('input')[1].setValue('星海广场')
+    expect(submit.attributes('disabled')).toBeDefined()
+
+    await wrapper.findComponent(PlaceInput).trigger('pick', {
+      name: '大连理工大学',
+      location: '121.6000,38.9200',
+    })
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('121.6001,38.9201')
+
     expect(submit.attributes('disabled')).toBeUndefined()
   })
 
@@ -61,14 +74,14 @@ describe('HomeView', () => {
     const api = makeApi()
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('大连理工大学')
-    await wrapper.findAll('input')[1].setValue('星海广场')
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('121.6001,38.9201')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
     expect(api.recommendRoute).toHaveBeenCalledWith({
-      origin: '大连理工大学',
-      destination: '星海广场',
+      origin: '121.6000,38.9200',
+      destination: '121.6001,38.9201',
       mode: '+5',
     })
 
@@ -76,6 +89,8 @@ describe('HomeView', () => {
     expect(emitted).toHaveLength(1)
     expect(emitted[0][0].route.polyline).toBe(RESULT.route.polyline)
     expect(emitted[0][0].request.mode).toBe('+5')
+    expect(emitted[0][0].request.origin).toBe('121.6000,38.9200')
+    expect(emitted[0][0].request.destination).toBe('121.6001,38.9201')
   })
 
   it('shows the loading state while the request is pending', async () => {
@@ -85,8 +100,8 @@ describe('HomeView', () => {
     })
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('大连理工大学')
-    await wrapper.findAll('input')[1].setValue('星海广场')
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('121.6001,38.9201')
     wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -107,8 +122,8 @@ describe('HomeView', () => {
     })
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('起点')
-    await wrapper.findAll('input')[1].setValue('终点')
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('121.6001,38.9201')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -116,12 +131,105 @@ describe('HomeView', () => {
     expect(wrapper.emitted('select')).toBeUndefined()
   })
 
+  it('asks the user to choose a place when the backend reports ambiguity', async () => {
+    const ambiguous = new Error('地点需要确认')
+    ambiguous.status = 409
+    ambiguous.detail = {
+      code: 'AMBIGUOUS_LOCATION',
+      location: '东港',
+      candidates: [
+        {
+          name: '东港音乐喷泉广场',
+          address: '五五路9号',
+          location: '121.6753,38.9307',
+          type: '风景名胜;公园广场;城市广场',
+        },
+      ],
+    }
+    const api = makeApi({
+      recommendRoute: vi.fn().mockRejectedValueOnce(ambiguous).mockResolvedValueOnce(RESULT),
+    })
+    const wrapper = mountHome(api)
+
+    await wrapper.findComponent(PlaceInput).trigger('pick', {
+      name: '东港音乐喷泉广场',
+      location: '121.6753,38.9307',
+    })
+    await wrapper.findAll('input')[0].setValue('121.6753,38.9307')
+    await wrapper.findAll('input')[1].setValue('老虎滩')
+    await wrapper.findComponent(PlaceInput).trigger('pick', {
+      name: '老虎滩',
+      location: '121.6753,38.8784',
+    })
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请先从联想结果中选择准确的终点，或输入坐标')
+    expect(wrapper.text()).toContain('东港音乐喷泉广场')
+    expect(wrapper.text()).toContain('老虎滩海洋公园')
+    expect(api.recommendRoute).not.toHaveBeenCalled()
+  })
+
+  it('blocks submit until both places are confirmed or coordinates', async () => {
+    const api = makeApi()
+    const wrapper = mountHome(api)
+
+    await wrapper.findComponent(PlaceInput).setValue('大连理工大学')
+    await wrapper.findComponent(PlaceInput).trigger('pick', {
+      name: '大连理工大学',
+      location: '121.6000,38.9200',
+    })
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('星海广场')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.recommendRoute).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请先从联想结果中选择准确的终点，或输入坐标')
+  })
+
+  it('allows submit after picking suggestions', async () => {
+    const api = makeApi()
+    const wrapper = mountHome(api)
+
+    await wrapper.findComponent(PlaceInput).trigger('pick', {
+      name: '大连理工大学',
+      location: '121.6000,38.9200',
+    })
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('121.6001,38.9201')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.recommendRoute).toHaveBeenCalledWith({
+      origin: '121.6000,38.9200',
+      destination: '121.6001,38.9201',
+      mode: '+5',
+    })
+  })
+
+  it('clears confirmation after manual edit', async () => {
+    const api = makeApi()
+    const wrapper = mountHome(api)
+
+    await wrapper.findComponent(PlaceInput).trigger('pick', {
+      name: '大连理工大学',
+      location: '121.6000,38.9200',
+    })
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[0].setValue('大工')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.recommendRoute).not.toHaveBeenCalled()
+  })
+
   it('warns when the backend returns no route', async () => {
     const api = makeApi({ recommendRoute: vi.fn(async () => ({ route: null, pois: [] })) })
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('起点')
-    await wrapper.findAll('input')[1].setValue('终点')
+    await wrapper.findAll('input')[0].setValue('121.6000,38.9200')
+    await wrapper.findAll('input')[1].setValue('121.6001,38.9201')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 

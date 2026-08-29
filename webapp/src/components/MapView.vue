@@ -84,7 +84,9 @@ function renderRouteAndPois() {
   if (!map) return
   clearLayers()
 
-  const latlngs = decodeRoutePolyline(props.route?.polyline)
+  const latlngs = decodeRoutePolyline(props.route?.polyline, {
+    coordinateSystem: props.route?.coordinate_system,
+  })
 
   if (latlngs.length && has('polyline')) {
     casingLayer = L.polyline(latlngs, {

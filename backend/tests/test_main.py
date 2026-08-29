@@ -33,8 +33,29 @@ def test_missing_frontend_asset_returns_404(client):
     assert response.headers["content-type"].startswith("application/json")
 
 
+def test_place_suggest_returns_ranked_real_candidates(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.routes.api.search_places",
+        lambda keyword, city="大连", limit=6, preferred_types=None: [
+            {
+                "name": "东港音乐喷泉广场",
+                "address": "五五路9号",
+                "location": "121.6753,38.9307",
+                "type": "风景名胜;公园广场;城市广场",
+                "coordinate_system": "gcj02",
+                "confidence": 0.94,
+            }
+        ],
+    )
+
+    response = client.get("/api/place/suggest", params={"keyword": "东港"})
+
+    assert response.status_code == 200
+    assert response.json()[0]["name"] == "东港音乐喷泉广场"
+
+
 def test_unknown_api_route_is_not_replaced_with_frontend(client):
-    response = client.get("/api/place/suggest", params={"keyword": "test"})
+    response = client.get("/api/not-real")
 
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/json")
@@ -68,7 +89,7 @@ def test_recommend_route_respects_exploration_budget(client, monkeypatch):
             "polyline": f"{origin};{destination}",
         }]
 
-    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
     monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: [poi])
 
@@ -100,7 +121,7 @@ def test_recommend_route_only_returns_poi_for_selected_route(client, monkeypatch
             "polyline": f"{origin};{waypoint or destination};{destination}",
         }]
 
-    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
     monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: pois)
 
@@ -128,7 +149,7 @@ def test_recommend_route_ignores_malformed_pois_and_ratings(client, monkeypatch)
             "polyline": f"{origin};{destination}",
         }]
 
-    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
     monkeypatch.setattr(
         "app.routes.api.explore_pois_along_route",
@@ -159,7 +180,7 @@ def test_recommend_route_skips_pois_without_coordinate(client, monkeypatch):
             "polyline": f"{origin};{destination}",
         }]
 
-    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
     monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: [poi])
 
@@ -190,7 +211,7 @@ def test_recommend_route_skips_pois_with_invalid_coordinate(client, monkeypatch)
             "polyline": f"{origin};{destination}",
         }]
 
-    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
     monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: [poi])
 
@@ -219,7 +240,7 @@ def test_recommend_route_rejects_unknown_mode_without_geocoding(client, monkeypa
 
 
 def test_recommend_route_rejects_same_resolved_endpoints(client, monkeypatch):
-    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: "120.1300,30.2590")
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: "120.1300,30.2590")
 
     response = client.post(
         "/api/route/recommend",
@@ -338,11 +359,32 @@ def test_recommend_route_returns_success_when_places_have_pois(client, monkeypat
     assert walking_requests[0].qs["origin"] == ["120.1300,30.2590"]
     assert walking_requests[0].qs["destination"] == ["120.1400,30.2550"]
 
-    assert body["pois"] == [poi_response["pois"][0]]
+    assert body["pois"] == [{**poi_response["pois"][0], "coordinate_system": "gcj02"}]
     assert body["baseline_minutes"] == 24
     assert body["detour_minutes"] == 5
     assert body["route"]["distance"] == 2380
     assert body["route"]["duration"] == 1720
+
+
+def test_recommend_route_prioritizes_scenic_pois_for_roam_mode(client, monkeypatch):
+    captured = {}
+
+    def capture_pois(*args, **kwargs):
+        captured["types"] = args[2]
+        return []
+
+    monkeypatch.setattr("app.routes.api.explore_pois_along_route", capture_pois)
+    response = client.post(
+        "/api/route/recommend",
+        json={
+            "origin": "120.1300,30.2590",
+            "destination": "120.1400,30.2550",
+            "mode": "roam",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["types"] == ["景点"]
 
 
 def test_recommend_route_geocodes_place_names_without_fake_pois(client, monkeypatch):

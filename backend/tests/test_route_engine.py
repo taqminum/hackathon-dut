@@ -17,6 +17,54 @@ def test_get_candidate_routes_returns_list():
         assert routes[0]["duration"] == 600
 
 
+def test_get_candidate_routes_marks_amap_coordinates_as_gcj02():
+    with (
+        patch.dict("os.environ", {"AMAP_KEY": "fake-key"}),
+        patch("app.services.route_engine.requests.get") as mock_get,
+    ):
+        mock_get.return_value.json.return_value = {
+            "route": {
+                "paths": [
+                    {
+                        "distance": "1000",
+                        "duration": "600",
+                        "polyline": "121.6068,38.9180;121.5854,38.9325",
+                    }
+                ]
+            }
+        }
+
+        routes = get_candidate_routes("121.6068,38.9180", "121.5854,38.9325", "+15")
+
+    assert routes[0]["coordinate_system"] == "gcj02"
+    assert routes[0]["demo_mode"] is False
+
+
+def test_get_candidate_routes_builds_polyline_from_amap_steps():
+    with (
+        patch.dict("os.environ", {"AMAP_KEY": "fake-key"}),
+        patch("app.services.route_engine.requests.get") as mock_get,
+    ):
+        mock_get.return_value.json.return_value = {
+            "route": {
+                "paths": [
+                    {
+                        "distance": "1000",
+                        "duration": "600",
+                        "steps": [
+                            {"polyline": "121.6068,38.9180;121.6000,38.9200"},
+                            {"polyline": "121.6000,38.9200;121.5854,38.9325"},
+                        ],
+                    }
+                ]
+            }
+        }
+
+        routes = get_candidate_routes("121.6068,38.9180", "121.5854,38.9325", "+15")
+
+    assert routes[0]["polyline"] == "121.6068,38.9180;121.6000,38.9200;121.5854,38.9325"
+
+
 def test_get_candidate_routes_ignores_incomplete_amap_paths():
     with (
         patch.dict("os.environ", {"AMAP_KEY": "fake-key"}),
@@ -39,6 +87,7 @@ def test_get_candidate_routes_uses_fallback_when_amap_missing():
     assert isinstance(routes, list)
     assert len(routes) == 1
     route = routes[0]
+    assert route["coordinate_system"] == "wgs84"
     assert route["distance"] > 1200
     assert route["duration"] > 900
     assert route["polyline"].startswith("116.3974,39.9092;")
@@ -63,14 +112,14 @@ def test_get_candidate_routes_fallback_waypoint_keeps_demo_extra_budget():
 def test_get_candidate_routes_reverses_demo_polyline_for_reverse_trip():
     with patch.dict("os.environ", {}, clear=True):
         route = get_candidate_routes(
-            "121.5854,38.9325",
-            "121.6068,38.9180",
+            "121.6746,38.8784",
+            "121.6753,38.9307",
             "+15",
         )[0]
 
     points = route["polyline"].split(";")
-    assert points[0] == "121.5854,38.9325"
-    assert points[-1] == "121.6068,38.9180"
+    assert points[0] == "121.6746,38.8784"
+    assert points[-1] == "121.6753,38.9307"
 
 
 def test_get_candidate_routes_fallback_waypoint_works_without_demo_scenario():

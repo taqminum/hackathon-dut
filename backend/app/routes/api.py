@@ -3,7 +3,12 @@ import math
 from fastapi import APIRouter, Body, HTTPException
 
 from app.services.detour_calculator import calculate_detour
-from app.services.geocoder import normalize_coordinate, resolve_location
+from app.services.geocoder import (
+    AmbiguousLocationError,
+    normalize_coordinate,
+    resolve_location,
+    search_places,
+)
 from app.services.narrative import generate_narrative
 from app.services.poi_explorer import explore_pois_along_route
 from app.services.route_engine import get_candidate_routes
@@ -14,6 +19,12 @@ router = APIRouter()
 scorer = SerendipityScorer()
 MAX_DETOUR_MINUTES = {"+5": 5, "+15": 15}
 SUPPORTED_MODES = {"+5", "+15", "roam"}
+
+
+@router.get("/place/suggest")
+def suggest_places(keyword: str, city: str = "大连"):
+    preferred_types = ["景点"] if any(token in keyword for token in ("景点", "公园", "广场", "海洋馆")) else []
+    return search_places(keyword, city=city, limit=6, preferred_types=preferred_types)
 
 
 class RecommendRequest:
@@ -36,8 +47,18 @@ def recommend_route(
         raise HTTPException(status_code=404, detail="未找到可行路线")
 
     try:
-        resolved_origin = resolve_location(origin)
-        resolved_destination = resolve_location(destination)
+        place_types = ["景点"] if mode == "roam" else []
+        resolved_origin = resolve_location(origin, preferred_types=place_types)
+        resolved_destination = resolve_location(destination, preferred_types=place_types)
+    except AmbiguousLocationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AMBIGUOUS_LOCATION",
+                "location": exc.location,
+                "candidates": exc.candidates,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="未找到可行路线") from exc
     except Exception as exc:  # pragma: no cover - defensive
@@ -60,10 +81,11 @@ def recommend_route(
     baseline_minutes = round(baseline["duration"] / 60)
 
     try:
+        poi_types = ["景点"] if mode == "roam" else ["餐饮", "景点", "购物"]
         pois = explore_pois_along_route(
             resolved_origin,
             resolved_destination,
-            ["餐饮", "景点", "购物"],
+            poi_types,
             radius=300,
         )
     except Exception:

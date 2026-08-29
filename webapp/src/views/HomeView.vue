@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import ExploreModeSelector from '../components/ExploreModeSelector.vue'
 import PlaceInput from '../components/PlaceInput.vue'
 import StateBlock from '../components/StateBlock.vue'
 import { DEFAULT_MODE, DEMO_SCENARIOS, findMode } from '../constants.js'
 import { useApi } from '../composables/useApi.js'
+import { isCoordString } from '../utils/geo.js'
 import { loadHistory, pushHistory, clearHistory } from '../utils/history.js'
 
 /**
@@ -30,9 +31,19 @@ const loading = ref(false)
 const error = ref('')
 const touched = ref(false)
 const history = ref([])
+const placeConfirm = ref(null)
+const selectedOrigin = ref(null)
+const selectedDestination = ref(null)
 
+const originConfirmed = computed(() => isCoordString(origin.value) || !!selectedOrigin.value)
+const destinationConfirmed = computed(() => isCoordString(destination.value) || !!selectedDestination.value)
 const canSubmit = computed(
-  () => !loading.value && !!origin.value.trim() && !!destination.value.trim(),
+  () =>
+    !loading.value &&
+    originConfirmed.value &&
+    destinationConfirmed.value &&
+    !!origin.value.trim() &&
+    !!destination.value.trim(),
 )
 
 const originInvalid = computed(() => touched.value && !origin.value.trim())
@@ -53,6 +64,11 @@ function swap() {
 async function handleSubmit(modeOverride) {
   touched.value = true
   error.value = ''
+  placeConfirm.value = null
+
+  if (!canSubmit.value) {
+    return
+  }
 
   if (!origin.value.trim() || !destination.value.trim()) {
     error.value = '请先填写起点和终点'
@@ -82,10 +98,34 @@ async function handleSubmit(modeOverride) {
     history.value = pushHistory({ ...payload })
     emit('select', { ...result, request: payload })
   } catch (err) {
+    if (err?.status === 409 && err?.detail?.code === 'AMBIGUOUS_LOCATION') {
+      const field = err.detail.location === origin.value.trim() ? 'origin' : 'destination'
+      placeConfirm.value = {
+        field,
+        candidates: Array.isArray(err.detail.candidates) ? err.detail.candidates : [],
+        mode: typeof modeOverride === 'string' ? modeOverride : mode.value,
+      }
+      error.value = ''
+      return
+    }
     error.value = err?.message || '获取路线失败，请稍后重试'
   } finally {
     loading.value = false
   }
+}
+
+function chooseConfirmedPlace(candidate) {
+  if (!placeConfirm.value || !candidate?.location) return
+  if (placeConfirm.value.field === 'origin') {
+    selectedOrigin.value = candidate
+    origin.value = candidate.location
+  } else {
+    selectedDestination.value = candidate
+    destination.value = candidate.location
+  }
+  const nextMode = placeConfirm.value.mode
+  placeConfirm.value = null
+  return handleSubmit(nextMode)
 }
 
 function fillDemo(newOrigin, newDestination, newMode) {
@@ -108,6 +148,26 @@ function removeHistory() {
 }
 
 const suggest = (payload) => api.suggestPlaces(payload)
+
+watch(origin, (next) => {
+  if (selectedOrigin.value && next !== (selectedOrigin.value.location || selectedOrigin.value.name)) {
+    selectedOrigin.value = null
+  }
+})
+watch(destination, (next) => {
+  if (selectedDestination.value && next !== (selectedDestination.value.location || selectedDestination.value.name)) {
+    selectedDestination.value = null
+  }
+})
+
+const unconfirmedMessage = computed(() => {
+  if (!touched.value) return ''
+  const parts = []
+  if (origin.value.trim() && !isCoordString(origin.value) && !selectedOrigin.value) parts.push('起点')
+  if (destination.value.trim() && !isCoordString(destination.value) && !selectedDestination.value) parts.push('终点')
+  if (!parts.length) return ''
+  return `请先从联想结果中选择准确的${parts.join('和')}，或输入坐标`
+})
 
 onMounted(() => {
   history.value = loadHistory()
@@ -148,6 +208,7 @@ defineExpose({ handleSubmit, fillDemo })
             :disabled="loading"
             :invalid="originInvalid"
             :suggest-fn="suggest"
+            @pick="selectedOrigin = $event"
           />
           <button
             type="button"
@@ -167,10 +228,13 @@ defineExpose({ handleSubmit, fillDemo })
             :disabled="loading"
             :invalid="destinationInvalid"
             :suggest-fn="suggest"
+            @pick="selectedDestination = $event"
           />
         </div>
 
         <ExploreModeSelector v-model="mode" :disabled="loading" />
+
+        <p v-if="unconfirmedMessage" class="bh-notice bh-notice--error" role="alert">{{ unconfirmedMessage }}</p>
 
         <button type="submit" class="bh-btn bh-btn--primary bh-btn--lg bh-btn--block" :disabled="!canSubmit">
           {{ loading ? '正在规划…' : '生成偶遇路线' }}
@@ -182,6 +246,24 @@ defineExpose({ handleSubmit, fillDemo })
           title="正在寻找可控的意外…"
           message="正在比较候选路线、计算绕行成本并挑选沿途亮点。"
         />
+        <div v-else-if="placeConfirm" class="place-confirm" role="alert">
+          <p class="place-confirm__title">
+            {{ placeConfirm.field === 'origin' ? '起点信息不足，请重新选择一个准确的起点' : '终点信息不足，请重新选择一个准确的终点' }}
+          </p>
+          <div class="place-confirm__list">
+            <button
+              v-for="candidate in placeConfirm.candidates"
+              :key="`${candidate.name}-${candidate.location}`"
+              type="button"
+              class="place-confirm__option"
+              @click="chooseConfirmedPlace(candidate)"
+            >
+              <span class="place-confirm__name">{{ candidate.name }}</span>
+              <span class="place-confirm__meta">{{ candidate.address || candidate.type }}</span>
+              <span class="bh-mono place-confirm__coord">{{ candidate.location }}</span>
+            </button>
+          </div>
+        </div>
         <p v-else-if="error" class="bh-notice bh-notice--error" role="alert">{{ error }}</p>
       </form>
 
@@ -333,6 +415,47 @@ defineExpose({ handleSubmit, fillDemo })
 .home__swap:disabled {
   background: var(--bh-paper-2);
   box-shadow: none;
+}
+
+.place-confirm {
+  display: grid;
+  gap: var(--bh-3);
+  padding: var(--bh-3);
+  border: var(--bh-line) solid var(--bh-ink);
+  background: var(--bh-paper-2);
+}
+
+.place-confirm__title {
+  margin: 0;
+  font-weight: 800;
+}
+
+.place-confirm__list {
+  display: grid;
+  gap: var(--bh-2);
+}
+
+.place-confirm__option {
+  display: grid;
+  gap: 2px;
+  padding: var(--bh-3);
+  border: 2px solid var(--bh-ink);
+  background: var(--bh-white);
+  text-align: left;
+}
+
+.place-confirm__option:hover {
+  background: var(--bh-yellow);
+}
+
+.place-confirm__name {
+  font-weight: 800;
+}
+
+.place-confirm__meta,
+.place-confirm__coord {
+  font-size: var(--bh-text-xs);
+  color: var(--bh-ink-soft);
 }
 
 /* ---------- 分区 ---------- */

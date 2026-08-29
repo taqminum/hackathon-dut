@@ -45,8 +45,11 @@ function withTimeout(client, url, options = {}, timeout = DEFAULT_TIMEOUT) {
 async function parse(response, fallbackMessage) {
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}))
-    const error = new Error(errorBody.detail || fallbackMessage)
+    const detail = errorBody.detail
+    const message = typeof detail === 'string' ? detail : detail?.message || fallbackMessage
+    const error = new Error(message)
     error.status = response.status
+    error.detail = detail
     throw error
   }
 
@@ -108,6 +111,9 @@ export async function suggestPlaces({ keyword, city = '大连' }, client = globa
         name: item.name || item.title || '',
         address: item.address || item.district || '',
         location: item.location || item.coord || '',
+        type: item.type || '',
+        coordinate_system: item.coordinate_system || '',
+        confidence: typeof item.confidence === 'number' ? item.confidence : null,
       }))
       .filter((item) => item.name)
   }, [])

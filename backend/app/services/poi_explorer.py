@@ -45,6 +45,7 @@ def explore_pois_along_route(origin: str, destination: str, types: list[str], ra
                             "distance": poi.get("distance"),
                             "rating": poi.get("rating", 0),
                             "location": poi.get("location"),
+                            "coordinate_system": "gcj02",
                         }
                     )
             if filtered:
@@ -61,9 +62,9 @@ DALIAN_POI_SCENARIOS = {
         {"name": "理工咖啡小铺", "type": "餐饮", "distance": "180", "rating": 4.4, "location": "121.6002,38.9218"},
         {"name": "海边散步道", "type": "景点", "distance": "310", "rating": 4.6, "location": "121.5921,38.9289"},
     ],
-    "121.6281,38.9329->121.6542,38.9337": [
-        {"name": "东港码头简餐", "type": "餐饮", "distance": "210", "rating": 4.3, "location": "121.6415,38.9334"},
-        {"name": "港东五街视角", "type": "景点", "distance": "340", "rating": 4.7, "location": "121.6484,38.9335"},
+    "121.6753,38.9307->121.6746,38.8784": [
+        {"name": "东港音乐喷泉广场", "type": "景点", "distance": "0", "rating": 4.6, "location": "121.675287,38.930747"},
+        {"name": "大连老虎滩海洋公园", "type": "景点", "distance": "0", "rating": 4.7, "location": "121.674648,38.878386"},
     ],
     "121.5899,38.9148->121.6075,38.9094": [
         {"name": "西安路小吃", "type": "餐饮", "distance": "150", "rating": 4.2, "location": "121.5987,38.9124"},

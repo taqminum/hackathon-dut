@@ -19,17 +19,17 @@ DALIAN_SCENARIOS = {
             "121.5854,38.9325",
         ],
     },
-    "121.6281,38.9329->121.6542,38.9337": {
-        "base_distance": 2800,
-        "base_duration": 1560,
-        "extra_distance": {None: 0, "+5": 260, "+15": 620, "roam": 980},
-        "extra_duration": {None: 0, "+5": 160, "+15": 360, "roam": 580},
+    "121.6753,38.9307->121.6746,38.8784": {
+        "base_distance": 6900,
+        "base_duration": 5520,
+        "extra_distance": {None: 0, "+5": 320, "+15": 760, "roam": 1120},
+        "extra_duration": {None: 0, "+5": 220, "+15": 480, "roam": 720},
         "polyline": [
-            "121.6281,38.9329",
-            "121.6352,38.9333",
-            "121.6426,38.9335",
-            "121.6489,38.9336",
-            "121.6542,38.9337",
+            "121.6753,38.9307",
+            "121.6760,38.9198",
+            "121.6762,38.9088",
+            "121.6754,38.8940",
+            "121.6746,38.8784",
         ],
     },
     "121.5899,38.9148->121.6075,38.9094": {
@@ -85,8 +85,10 @@ def get_candidate_routes(origin: str, destination: str, mode: str, waypoint: str
                         {
                             "distance": distance,
                             "duration": duration,
+                            "demo_mode": False,
+                            "coordinate_system": "gcj02",
                             "steps": path.get("steps", []),
-                            "polyline": path.get("polyline", ""),
+                            "polyline": _path_polyline(path),
                         }
                     )
                 if routes:
@@ -95,6 +97,25 @@ def get_candidate_routes(origin: str, destination: str, mode: str, waypoint: str
             pass
 
     return [_build_fallback_route(origin, destination, mode, waypoint)]
+
+
+def _path_polyline(path: dict) -> str:
+    polyline = path.get("polyline")
+    if isinstance(polyline, str) and polyline.strip():
+        return polyline
+
+    points = []
+    for step in path.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        step_polyline = step.get("polyline")
+        if not isinstance(step_polyline, str):
+            continue
+        for point in step_polyline.split(";"):
+            point = point.strip()
+            if point and (not points or points[-1] != point):
+                points.append(point)
+    return ";".join(points)
 
 
 def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: str | None) -> dict:
@@ -144,6 +165,7 @@ def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: st
         "origin": origin,
         "destination": destination,
         "demo_mode": scenario is not None,
+        "coordinate_system": "wgs84",
         "distance": base_distance,
         "duration": base_duration,
         "steps": [
