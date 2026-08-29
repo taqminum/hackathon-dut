@@ -2,8 +2,10 @@
  * 本地联调用的假后端，仅供前端开发 / 冒烟验证使用。
  * 契约与 backend/app/routes/api.py 保持一致：
  *   GET  /health                -> { status: "ok" }
+ *   GET  /api/place/suggest     -> []
  *   POST /api/route/recommend   -> { baseline_minutes, detour_minutes, score, pois, narrative, route }
- * 未定稿接口（place/suggest、trip/save 等）返回 404，用于验证前端降级路径。
+ * 已声明但未实现的接口（trip/save、trip/list、feedback、poi/:id）
+ * 统一返回 501，用于验证前端降级路径。
  *
  * 用法： node tests/mock-server.mjs [port]
  */
@@ -16,6 +18,7 @@ const SCENARIOS = {
     baseline_minutes: 21,
     detour_minutes: 5,
     score: 6.4,
+    poi_demo_mode: true,
     narrative: '从大工沿海边走，你会先遇到一间社区咖啡，再顺着海景走到星海。',
     pois: [
       { name: '理工咖啡小铺', type: '餐饮', distance: '180', rating: 4.4, location: '121.6002,38.9218' },
@@ -43,6 +46,7 @@ const FALLBACK = {
   baseline_minutes: 16,
   detour_minutes: 3,
   score: 5.2,
+  poi_demo_mode: true,
   narrative: '这条路线上有几个值得停留的小地方，适合慢慢走。',
   pois: [{ name: '偶遇小店', type: '餐饮', distance: '120', rating: 4.2, location: '121.601,38.918' }],
   route: {
@@ -80,6 +84,11 @@ createServer((req, res) => {
 
   if (url.pathname === '/health') {
     send(res, 200, { status: 'ok' })
+    return
+  }
+
+  if (url.pathname === '/api/place/suggest' && req.method === 'GET') {
+    send(res, 200, [])
     return
   }
 
@@ -122,7 +131,16 @@ createServer((req, res) => {
     return
   }
 
-  // 未定稿接口：故意返回 404，验证前端降级不报错
+  const unimplemented =
+    (url.pathname === '/api/trip/save' && req.method === 'POST') ||
+    (url.pathname === '/api/trip/list' && req.method === 'GET') ||
+    (url.pathname === '/api/feedback' && req.method === 'POST') ||
+    (url.pathname.startsWith('/api/poi/') && req.method === 'GET')
+  if (unimplemented) {
+    send(res, 501, { detail: { code: 'NOT_IMPLEMENTED', message: '接口尚未实现' } })
+    return
+  }
+
   send(res, 404, { detail: 'Not Found' })
 }).listen(PORT, () => {
   console.log(`mock backend listening on http://localhost:${PORT}`)

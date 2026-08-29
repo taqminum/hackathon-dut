@@ -91,7 +91,10 @@ def test_recommend_route_respects_exploration_budget(client, monkeypatch):
 
     monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
-    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: [poi])
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: ([poi], False),
+    )
 
     response = client.post(
         "/api/route/recommend",
@@ -123,7 +126,10 @@ def test_recommend_route_only_returns_poi_for_selected_route(client, monkeypatch
 
     monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
-    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: pois)
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: (pois, False),
+    )
 
     response = client.post(
         "/api/route/recommend",
@@ -152,8 +158,8 @@ def test_recommend_route_ignores_malformed_pois_and_ratings(client, monkeypatch)
     monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
     monkeypatch.setattr(
-        "app.routes.api.explore_pois_along_route",
-        lambda *args, **kwargs: [None, "malformed", poi],
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: ([None, "malformed", poi], False),
     )
 
     response = client.post(
@@ -182,7 +188,10 @@ def test_recommend_route_skips_pois_without_coordinate(client, monkeypatch):
 
     monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
-    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: [poi])
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: ([poi], False),
+    )
 
     response = client.post(
         "/api/route/recommend",
@@ -213,7 +222,10 @@ def test_recommend_route_skips_pois_with_invalid_coordinate(client, monkeypatch)
 
     monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
     monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
-    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *args, **kwargs: [poi])
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: ([poi], False),
+    )
 
     response = client.post(
         "/api/route/recommend",
@@ -371,9 +383,9 @@ def test_recommend_route_prioritizes_scenic_pois_for_roam_mode(client, monkeypat
 
     def capture_pois(*args, **kwargs):
         captured["types"] = args[2]
-        return []
+        return [], False
 
-    monkeypatch.setattr("app.routes.api.explore_pois_along_route", capture_pois)
+    monkeypatch.setattr("app.routes.api.explore_pois_with_source", capture_pois)
     response = client.post(
         "/api/route/recommend",
         json={
@@ -434,3 +446,93 @@ def test_recommend_route_keeps_builtin_demo_scenario(client, monkeypatch):
     assert len(body["pois"]) == 1
     assert body["baseline_minutes"] == 21
     assert body["detour_minutes"] == 5
+
+
+def test_recommend_route_flags_demo_pois_when_route_is_real(client, monkeypatch):
+    poi = {
+        "name": "内置演示亮点",
+        "type": "景点",
+        "rating": 4.6,
+        "location": "121.6002,38.9218",
+    }
+
+    def fake_routes(origin, destination, mode, waypoint=None):
+        return [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1000,
+            "duration": 300,
+            "demo_mode": False,
+            "steps": [],
+            "polyline": f"{origin};{destination}",
+        }]
+
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
+    monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: ([poi], True),
+    )
+
+    response = client.post(
+        "/api/route/recommend",
+        json={"origin": "120.1300,30.2590", "destination": "120.1400,30.2550", "mode": "+15"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["route"]["demo_mode"] is False
+    assert body["poi_demo_mode"] is True
+    assert body["pois"] == [poi]
+
+
+def test_recommend_route_keeps_poi_demo_mode_false_for_real_pois(client, monkeypatch):
+    poi = {
+        "name": "真实亮点",
+        "type": "景点",
+        "rating": 4.8,
+        "location": "120.1350,30.2570",
+    }
+
+    def fake_routes(origin, destination, mode, waypoint=None):
+        return [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1000,
+            "duration": 301 if waypoint else 300,
+            "demo_mode": False,
+            "steps": [],
+            "polyline": f"{origin};{waypoint or destination};{destination}",
+        }]
+
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value, **kwargs: value)
+    monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_with_source",
+        lambda *args, **kwargs: ([poi], False),
+    )
+
+    response = client.post(
+        "/api/route/recommend",
+        json={"origin": "120.1300,30.2590", "destination": "120.1400,30.2550", "mode": "+5"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["poi_demo_mode"] is False
+    assert body["pois"] == [poi]
+
+
+def test_planned_but_unimplemented_endpoints_return_501(client):
+    requests = [
+        ("post", "/api/trip/save"),
+        ("get", "/api/trip/list"),
+        ("post", "/api/feedback"),
+        ("get", "/api/poi/123"),
+    ]
+
+    for method, path in requests:
+        response = getattr(client, method)(path)
+
+        assert response.status_code == 501, path
+        assert response.json()["detail"]["code"] == "NOT_IMPLEMENTED"

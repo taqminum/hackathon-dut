@@ -48,12 +48,13 @@ const totalMinutes = computed(() => {
 })
 const distance = computed(() => formatDistance(route.value?.distance))
 const isDemo = computed(() => route.value?.demo_mode === true)
+const isPoiDemo = computed(() => props.result?.poi_demo_mode === true)
 
 function focusPoi(index) {
   activePoiIndex.value = activePoiIndex.value === index ? -1 : index
 }
 
-/** 收藏当前路线。接口未定稿，失败只提示，不阻塞 */
+/** 收藏当前路线。接口尚未实现，失败只提示，不阻塞 */
 async function save() {
   saveState.value = 'saving'
   const response = await api.saveTrip({
@@ -70,7 +71,7 @@ async function save() {
   saveState.value = response?.ok ? 'saved' : 'failed'
 }
 
-/** 路线反馈。接口未定稿，静默降级 */
+/** 路线反馈。接口尚未实现，静默降级 */
 async function feedback(liked) {
   feedbackState.value = liked ? 'liked' : 'disliked'
   await api.sendFeedback({
@@ -117,7 +118,10 @@ const saveLabel = computed(() => {
         </div>
 
         <p v-if="isDemo" class="bh-notice bh-notice--warn">
-          当前展示内置演示数据（未配置高德 Key），指标与路线为预置场景。
+          高德服务不可用或未配置 Key，当前展示内置演示数据，指标与路线可能来自本地估算或预置场景。
+        </p>
+        <p v-else-if="isPoiDemo" class="bh-notice bh-notice--warn">
+          沿途亮点来自内置演示数据，路线本身仍为高德真实路线。
         </p>
 
         <div class="result__tiles">

@@ -1,5 +1,6 @@
 from unittest.mock import patch
-from app.services.poi_explorer import explore_pois_along_route
+import requests
+from app.services.poi_explorer import explore_pois_along_route, explore_pois_with_source
 
 
 def test_explore_pois_along_route_filters_by_type():
@@ -50,3 +51,43 @@ def test_explore_pois_along_route_discards_malformed_remote_pois():
             "coordinate_system": "gcj02",
         }
     ]
+
+
+def test_explore_pois_with_source_marks_real_pois_as_not_demo():
+    with (
+        patch.dict("os.environ", {"AMAP_KEY": "fake-key"}),
+        patch("app.services.poi_explorer.requests.get") as mock_get,
+    ):
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "pois": [{"name": "真实亮点", "type": "景点", "location": "121.6002,38.9218"}]
+        }
+
+        pois, used_demo = explore_pois_with_source(
+            "121.6068,38.9180",
+            "121.5854,38.9325",
+            ["景点"],
+            300,
+        )
+
+    assert used_demo is False
+    assert pois[0]["name"] == "真实亮点"
+
+
+def test_explore_pois_with_source_flags_demo_fallback():
+    with (
+        patch.dict("os.environ", {"AMAP_KEY": "fake-key"}),
+        patch(
+            "app.services.poi_explorer.requests.get",
+            side_effect=requests.RequestException("boom"),
+        ),
+    ):
+        pois, used_demo = explore_pois_with_source(
+            "121.6068,38.9180",
+            "121.5854,38.9325",
+            ["餐饮"],
+            300,
+        )
+
+    assert used_demo is True
+    assert [poi["name"] for poi in pois] == ["理工咖啡小铺"]

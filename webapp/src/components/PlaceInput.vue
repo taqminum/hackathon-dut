@@ -5,7 +5,7 @@ import { isCoordString } from '../utils/geo.js'
 
 /**
  * 地点输入框。
- * 后端 /api/place/suggest 未定稿：有响应就用远端联想，无响应退化为本地常用地点过滤。
+ * 后端 /api/place/suggest 已实现：有响应就用远端联想，无响应退化为本地常用地点过滤。
  * 值本身透传给后端（坐标串或地名皆可），不做强校验，避免挡住演示。
  */
 const props = defineProps({

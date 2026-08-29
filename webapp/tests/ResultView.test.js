@@ -86,6 +86,17 @@ describe('ResultView', () => {
     expect(wrapper.text()).toContain('内置演示数据')
   })
 
+  it('flags demo pois even when the route is real', () => {
+    const wrapper = mountResult({
+      ...RESULT,
+      poi_demo_mode: true,
+      route: { ...RESULT.route, demo_mode: false },
+    })
+
+    expect(wrapper.text()).toContain('沿途亮点来自内置演示数据')
+    expect(wrapper.text()).toContain('路线本身仍为高德真实路线')
+  })
+
   it('renders route steps and toggles the collapsed ones', async () => {
     const wrapper = mountResult(RESULT)
     expect(wrapper.text()).toContain('沿凌工路向西')

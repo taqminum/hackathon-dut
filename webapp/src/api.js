@@ -1,14 +1,14 @@
 /**
  * 后端接口封装。
  *
- * 已由后端确定的接口：
+ * 已实现的接口：
  *   GET  /health
+ *   GET  /api/place/suggest?keyword=&city=   地点联想
  *   POST /api/route/recommend  { origin, destination, mode } ->
  *        { baseline_minutes, detour_minutes, score, pois, narrative, route }
  *
- * 以下接口后端尚未定稿，前端按使用意图先写好请求；
+ * 以下接口后端已声明但尚未实现（统一返回 501），前端按使用意图先写好请求；
  * 拿不到响应时统一降级，不阻塞主流程（见 withFallback）。
- *   GET  /api/place/suggest?keyword=&city=   地点联想
  *   GET  /api/poi/:id                        POI 详情
  *   POST /api/trip/save                      收藏路线
  *   GET  /api/trip/list                      收藏列表
@@ -56,7 +56,7 @@ async function parse(response, fallbackMessage) {
   return response.json()
 }
 
-/** 未定稿接口的降级包装：失败就返回兜底值，不把异常抛给界面 */
+/** 未实现或可选接口的降级包装：失败就返回兜底值，不把异常抛给界面 */
 async function withFallback(promiseFactory, fallbackValue) {
   try {
     return await promiseFactory()
@@ -92,7 +92,7 @@ export async function checkHealth(client = globalThis.fetch) {
   }, { online: false, detail: null })
 }
 
-/** 地点联想。后端未定稿，失败返回空数组，输入框退化为纯文本输入 */
+/** 地点联想。已实现接口；失败仍返回空数组，输入框退化为纯文本输入 */
 export async function suggestPlaces({ keyword, city = '大连' }, client = globalThis.fetch) {
   if (!keyword || !keyword.trim()) return []
 
@@ -119,7 +119,7 @@ export async function suggestPlaces({ keyword, city = '大连' }, client = globa
   }, [])
 }
 
-/** POI 详情。后端未定稿，失败返回 null，界面只展示列表里已有的字段 */
+/** POI 详情。后端尚未实现（501），失败返回 null，界面只展示列表里已有的字段 */
 export async function fetchPoiDetail(poiId, client = globalThis.fetch) {
   if (!poiId) return null
 
@@ -134,7 +134,7 @@ export async function fetchPoiDetail(poiId, client = globalThis.fetch) {
   }, null)
 }
 
-/** 收藏当前路线。后端未定稿，失败返回 { ok: false } 让界面提示稍后重试 */
+/** 收藏当前路线。后端尚未实现（501），失败返回 { ok: false } 让界面提示稍后重试 */
 export async function saveTrip(payload, client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/trip/save'), {
@@ -147,7 +147,7 @@ export async function saveTrip(payload, client = globalThis.fetch) {
   }, { ok: false })
 }
 
-/** 收藏列表。后端未定稿，失败返回空数组 */
+/** 收藏列表。后端尚未实现（501），失败返回空数组 */
 export async function listTrips(client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/trip/list'), { method: 'GET' }, 8000)
@@ -156,7 +156,7 @@ export async function listTrips(client = globalThis.fetch) {
   }, [])
 }
 
-/** 路线反馈。后端未定稿，失败静默，不打断演示 */
+/** 路线反馈。后端尚未实现（501），失败静默，不打断演示 */
 export async function sendFeedback({ tripId, liked, mode, comment = '' }, client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/feedback'), {

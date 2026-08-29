@@ -10,7 +10,7 @@ from app.services.geocoder import (
     search_places,
 )
 from app.services.narrative import generate_narrative
-from app.services.poi_explorer import explore_pois_along_route
+from app.services.poi_explorer import explore_pois_with_source
 from app.services.route_engine import get_candidate_routes
 from app.services.scorer import SerendipityScorer
 
@@ -82,14 +82,14 @@ def recommend_route(
 
     try:
         poi_types = ["景点"] if mode == "roam" else ["餐饮", "景点", "购物"]
-        pois = explore_pois_along_route(
+        pois, poi_demo = explore_pois_with_source(
             resolved_origin,
             resolved_destination,
             poi_types,
             radius=300,
         )
     except Exception:
-        pois = []
+        pois, poi_demo = [], False
 
     candidates = []
     for poi in pois:
@@ -148,6 +148,7 @@ def recommend_route(
             "pois": [],
             "narrative": narrative,
             "route": baseline,
+            "poi_demo_mode": poi_demo,
         }
 
     narrative = generate_narrative(chosen["route"], mode)
@@ -158,7 +159,38 @@ def recommend_route(
         "pois": [chosen["poi"]],
         "narrative": narrative,
         "route": chosen["route"],
+        "poi_demo_mode": poi_demo,
     }
+
+
+def _not_implemented(feature: str):
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "code": "NOT_IMPLEMENTED",
+            "message": f"{feature}接口尚未实现",
+        },
+    )
+
+
+@router.post("/trip/save")
+def save_trip():
+    _not_implemented("收藏路线")
+
+
+@router.get("/trip/list")
+def list_trips():
+    _not_implemented("收藏列表")
+
+
+@router.post("/feedback")
+def send_feedback():
+    _not_implemented("路线反馈")
+
+
+@router.get("/poi/{poi_id}")
+def poi_detail(poi_id: str):
+    _not_implemented("POI 详情")
 
 
 def _choose_candidate(candidates: list[dict], mode: str) -> dict | None:

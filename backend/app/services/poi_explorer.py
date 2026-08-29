@@ -7,6 +7,11 @@ POI_URL = "https://restapi.amap.com/v3/place/around"
 
 
 def explore_pois_along_route(origin: str, destination: str, types: list[str], radius: int = 300) -> list[dict]:
+    pois, _ = explore_pois_with_source(origin, destination, types, radius)
+    return pois
+
+
+def explore_pois_with_source(origin: str, destination: str, types: list[str], radius: int = 300) -> tuple[list[dict], bool]:
     lng1, lat1 = resolve_location(origin).split(",", 1)
     lng2, lat2 = resolve_location(destination).split(",", 1)
 
@@ -49,12 +54,13 @@ def explore_pois_along_route(origin: str, destination: str, types: list[str], ra
                         }
                     )
             if filtered:
-                return filtered
+                return filtered, False
         except (requests.RequestException, TypeError, ValueError, AttributeError):
             pass
 
     fallback = _dalian_fallback_pois(origin, destination) or []
-    return [poi for poi in fallback if any(t in poi.get("type", "") for t in types)]
+    pois = [poi for poi in fallback if any(t in poi.get("type", "") for t in types)]
+    return pois, bool(pois)
 
 
 DALIAN_POI_SCENARIOS = {

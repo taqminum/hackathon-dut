@@ -74,7 +74,7 @@ try {
 
     await page.screenshot({ path: `${OUT}/${viewport.name}-result.png`, fullPage: true })
 
-    // 未定稿接口：收藏会 404，界面应提示失败而不是崩溃
+    // 未实现接口：收藏会 501，界面应提示失败而不是崩溃
     await page.locator('.bh-btn--accent').click()
     await page.waitForTimeout(600)
     check('收藏接口缺失时提示失败而非崩溃', await page.getByText('收藏失败').isVisible())
