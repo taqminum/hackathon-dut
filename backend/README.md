@@ -6,9 +6,8 @@ FastAPI 后端目录。
 
 - 已实现健康检查：`GET /health`
 - 已实现推荐接口：`POST /api/route/recommend`
-- 地名使用 OpenStreetMap Nominatim 解析，前端地图使用 Leaflet + OpenStreetMap。
-- 无需高德 Key；未配置时使用内置场景和本地路线估算，方便直接演示。
-- `AMAP_KEY` 仅保留为可选兼容配置，默认流程不会调用高德接口。
+- 配置 `AMAP_KEY` 后，地名检索、步行路线和沿途 POI 均调用高德 Web 服务；前端地图使用 Leaflet + OpenStreetMap 展示。
+- 未配置 `AMAP_KEY` 或高德请求失败时，降级使用内置大连演示场景与本地路线估算，方便直接演示。
 
 ## 快速开始
 

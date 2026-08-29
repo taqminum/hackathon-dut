@@ -13,7 +13,7 @@ Hackathon 项目：先做网页版，再尝试打包为 Android App 壳。
 
 ```bash
 cd backend
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --env-file .env
 ```
 
 打开 `http://localhost:8000` 即可预览网页版。
