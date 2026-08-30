@@ -1,13 +1,14 @@
 import concurrent.futures
 import math
 import os
+import time
 
 import requests
 
 from app.services.coord import gcj02_str_to_wgs84_str, wgs84_str_to_gcj02_str
 from app.services.dalian import scenario_key
 from app.services.geocoder import resolve_location
-from app.services.route_engine import throttle_amap
+from app.services.route_engine import AMAP_MAX_ATTEMPTS, AMAP_RATE_LIMIT_CODES, throttle_amap
 
 POI_URL = "https://restapi.amap.com/v3/place/around"
 
@@ -222,15 +223,35 @@ def _query_around(
         "key": os.getenv("AMAP_KEY"),
     }
 
-    try:
-        throttle_amap()
-        response = requests.get(POI_URL, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-    except (requests.RequestException, TypeError, ValueError, AttributeError) as exc:
-        if strict:
-            raise RuntimeError(f"高德地点搜索失败：{exc}") from exc
-        return []
+    data = None
+    last_error = None
+    for attempt in range(AMAP_MAX_ATTEMPTS):
+        try:
+            throttle_amap()
+            response = requests.get(POI_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < AMAP_MAX_ATTEMPTS - 1:
+                time.sleep(0.8 * (2**attempt))
+                continue
+            if strict:
+                raise RuntimeError(f"高德地点搜索失败：{exc}") from exc
+            return []
+        except (TypeError, ValueError, AttributeError) as exc:
+            # JSON/结构错误重试不会改变响应，只会让离线单元回归和线上请求白等。
+            if strict:
+                raise RuntimeError(f"高德地点搜索失败：{exc}") from exc
+            return []
+
+        if isinstance(data, dict) and str(data.get("status")) == "1":
+            break
+        infocode = str(data.get("infocode", "")) if isinstance(data, dict) else ""
+        if infocode in AMAP_RATE_LIMIT_CODES and attempt < AMAP_MAX_ATTEMPTS - 1:
+            time.sleep(0.8 * (2**attempt))
+            continue
+        break
 
     invalid_status = not isinstance(data, dict) or (
         (strict or "status" in data) and str(data.get("status")) != "1"
@@ -239,7 +260,7 @@ def _query_around(
         if strict:
             info = data.get("info") if isinstance(data, dict) else "响应格式错误"
             infocode = data.get("infocode") if isinstance(data, dict) else ""
-            raise RuntimeError(f"高德地点搜索失败：{info or '未知错误'} ({infocode})")
+            raise RuntimeError(f"高德地点搜索失败：{info or last_error or '未知错误'} ({infocode})")
         return []
 
     pois = data.get("pois", []) if isinstance(data, dict) else []

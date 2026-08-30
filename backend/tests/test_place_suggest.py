@@ -61,8 +61,8 @@ def test_suggest_sends_keyword_and_city_to_amap(client, monkeypatch):
     assert query["city"] == ["大连"]
 
 
-def test_suggest_survives_tips_without_coordinates(client, monkeypatch):
-    """行政区条目的 location / district 是空数组 `[]`，不是 null。"""
+def test_suggest_filters_tips_without_coordinates(client, monkeypatch):
+    """行政区条目的 location / district 是空数组，不能作为可规划地点返回。"""
     monkeypatch.setenv("AMAP_KEY", "test-key")
 
     with requests_mock.Mocker() as mocker:
@@ -82,11 +82,8 @@ def test_suggest_survives_tips_without_coordinates(client, monkeypatch):
         response = client.get("/api/place/suggest", params={"keyword": "沙河口"})
 
     suggestions = response.json()["suggestions"]
-    assert [item["name"] for item in suggestions] == ["沙河口区", "有坐标的点"]
-    # 没有坐标的条目坐标留空，前端会拿 name 再走一次地理编码
-    assert suggestions[0]["location"] == ""
-    assert suggestions[0]["district"] == ""
-    assert suggestions[1]["location"] != ""
+    assert [item["name"] for item in suggestions] == ["有坐标的点"]
+    assert suggestions[0]["location"] != ""
 
 
 def test_suggest_reports_amap_failure(client, monkeypatch):
