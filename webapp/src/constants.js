@@ -32,6 +32,31 @@ export const EXPLORE_MODES = [
 
 export const DEFAULT_MODE = '+5'
 
+/** 探索评分满分。必须等于后端 `SerendipityScorer` 的可达上界
+ * （TAG_WEIGHT 3.0 + QUALITY_WEIGHT 4.0 = 7.0，见 backend/app/services/scorer.py）。
+ * ScoreMeter 的分母、进度条填充比例、ResultView 的「当前 X 分」共用这一个数，
+ * 三处分别写死会出现「7.2/7」那类互相矛盾的读数。 */
+export const SCORE_MAX = 7
+
+/** T4：评分公式的三个权重，与 backend/app/services/scorer.py 的
+ * `SerendipityScorer` 逐个对应（TAG_WEIGHT / QUALITY_WEIGHT /
+ * DETOUR_PENALTY_PER_MINUTE）。结果页要把「这 6.6 分是怎么来的」拆开讲，
+ * 就得知道后端是怎么加的。
+ *
+ * 这是一份**副本**，后端改权重这里不会自动跟着改。所以 ResultView 拆分前
+ * 会先验算一遍：拆出来的三项加不回 `score` 就不显示拆分，只报总分 ——
+ * 宁可少说一句，也不摆一组加不出总数的数字。
+ */
+export const SCORE_WEIGHTS = {
+  tag: 3.0,
+  quality: 4.0,
+  detourPenaltyPerMinute: 0.2,
+}
+
+/** 各模式的绕行预算（分钟），与 backend/app/routes/api.py 的
+ * `MAX_DETOUR_MINUTES` 一致。用来解释「多花的时间在不在你选的额度里」。 */
+export const DETOUR_BUDGET = { '+5': 5, '+15': 15, roam: 30 }
+
 export function findMode(value) {
   return EXPLORE_MODES.find((item) => item.value === value) || EXPLORE_MODES[0]
 }

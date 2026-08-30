@@ -1,6 +1,7 @@
 import math
 import re
 
+import pytest
 import requests_mock
 
 from app.services.dalian import landmark, scenario_key
@@ -122,7 +123,8 @@ def test_recommend_route_leads_with_the_poi_the_route_goes_through(client, monke
     assert response.status_code == 200
     body = response.json()
     # 选中的那个打头，绕行 301s 的候选胜出
-    assert body["pois"][0] == pois[0]
+    assert body["pois"][0] == {**pois[0], "off_route_meters": body["pois"][0]["off_route_meters"]}
+    assert body["pois"][0]["off_route_meters"] == pytest.approx(0, abs=1)
     assert body["route"]["duration"] == 301
 
 
@@ -212,7 +214,9 @@ def test_recommend_route_ignores_malformed_pois_and_ratings(client, monkeypatch)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["pois"] == [poi]
+    assert len(body["pois"]) == 1
+    assert body["pois"][0] == {**poi, "off_route_meters": body["pois"][0]["off_route_meters"]}
+    assert body["pois"][0]["off_route_meters"] == pytest.approx(0, abs=1)
     assert math.isfinite(body["score"])
 
 
@@ -448,9 +452,21 @@ def test_recommend_route_returns_success_when_places_have_pois(client, monkeypat
 
     # 反过来，高德返回的 GCJ-02 必须转回 WGS-84 再给前端。
     # rating 由高德的字符串解析成 float 后再返回给前端。
+    # R6：另加四个扩展字段。这份桩响应里一个都没有，所以全是空串 ——
+    # 端到端也要确认「没取到就是空」，而不是在中间某层被填上占位文本。
     assert body["pois"] == [
-        {**poi_response["pois"][0], "location": "120.130242,30.259292", "rating": 4.6}
+        {
+            **poi_response["pois"][0],
+            "location": "120.130242,30.259292",
+            "rating": 4.6,
+            "address": "",
+            "tel": "",
+            "opentime": "",
+            "photo": "",
+            "off_route_meters": body["pois"][0]["off_route_meters"],
+        }
     ]
+    assert body["pois"][0]["off_route_meters"] == pytest.approx(0, abs=1)
     assert body["route"]["polyline"].split(";")[0] == "120.125231,30.261286"
     assert body["baseline_minutes"] == 24
     # 两段合计 1720s vs 基准 1420s -> 绕行 5 分钟
@@ -508,7 +524,16 @@ def test_recommend_route_keeps_builtin_demo_scenario(client, monkeypatch):
     assert body["route"]["demo_mode"] is True
     assert body["pois"], "演示场景必须给出沿途亮点"
     assert body["baseline_minutes"] == round(scenario["base_duration"] / 60)
-    assert body["detour_minutes"] == round(scenario["extra_duration"]["+15"] / 60)
+    # R4：这一行原来断言 `detour_minutes == round(extra_duration["+15"] / 60)`，
+    # **原断言锁定了数字与几何脱钩的缺陷** —— extra_duration 是查表加上去的常数，
+    # 与推荐折线的实际长度无关。现在绕行时长由两条折线的几何长度之差决定，
+    # 兜底演示数据里这个差很小（7 公里的路上偏 70~180 米），所以断言的是
+    # 「绕行落在模式预算内、且与两条路线的时长差一致」，而不是一个写死的数字。
+    from app.routes.api import MAX_DETOUR_MINUTES
+
+    route_minutes = round(body["route"]["duration"] / 60)
+    assert body["detour_minutes"] == max(0, route_minutes - body["baseline_minutes"])
+    assert body["detour_minutes"] <= MAX_DETOUR_MINUTES["+15"]
 
 
 def test_roam_mode_has_a_detour_ceiling(client, monkeypatch):
@@ -573,7 +598,8 @@ def test_roam_still_accepts_a_detour_beyond_the_plus_15_budget(client, monkeypat
     )
 
     body = response.json()
-    assert body["pois"] == [poi]
+    assert len(body["pois"]) == 1
+    assert body["pois"][0] == {**poi, "off_route_meters": body["pois"][0]["off_route_meters"]}
     assert body["detour_minutes"] == 20
 
 
@@ -691,3 +717,122 @@ def test_rejected_mode_does_not_get_recorded(client):
 
     assert response.status_code == 422
     assert client.get("/api/preference").json()["mode"] == before
+
+
+# --- P3-4：基准路线 vs 推荐路线同图对比 ---------------------------------------
+
+
+def test_recommend_route_returns_baseline_route_for_comparison(client, monkeypatch):
+    """P3-4：响应要带 `baseline_route`，前端才画得出灰虚线的「原本那条路」。
+
+    产品卖点是「换一条路」，图上只有推荐的那一条就看不出换掉了什么。
+    这里断言基准确实是**未绕行**的那条（duration 300 而非 601），
+    否则拿推荐路线自己去比，对比图会是两条重合的线。
+    """
+    poi = {
+        "name": "\u6d4b\u8bd5\u4eae\u70b9",
+        "type": "\u666f\u70b9",
+        "rating": 5,
+        "location": "120.1350,30.2570",
+    }
+
+    def fake_routes(origin, destination, mode, waypoint=None):
+        return [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1400 if waypoint else 1000,
+            "duration": 601 if waypoint else 300,
+            "steps": [],
+            "polyline": f"{origin};{destination}",
+        }]
+
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
+    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *a, **k: [poi])
+
+    body = client.post(
+        "/api/route/recommend",
+        json={"origin": "120.1300,30.2590", "destination": "120.1400,30.2550", "mode": "+15"},
+    ).json()
+
+    assert "baseline_route" in body
+    assert body["baseline_route"]["duration"] == 300
+    assert body["baseline_route"]["polyline"]
+    # 推荐路线确实绕了路，两条线不重合，对比才有意义
+    assert body["route"]["duration"] == 601
+
+
+def test_baseline_route_is_present_at_both_return_paths(client, monkeypatch):
+    """P3-4：`_choose_candidate` 选不出候选时的降级出口也必须带 `baseline_route`。
+
+    只加正常出口的话响应形状变成条件式的 —— 前端拿不到就静默不画灰虚线，
+    表现为「有时候有对比、有时候没有」而且不报错，正是 P2-5 修过的那类隐性依赖。
+    所以这里断言两个出口的**键集合一致**（除了降级时本就没有的 trip_id），
+    以后往正常出口加字段会自动被这条抓住。
+    """
+    poi = {
+        "name": "\u6d4b\u8bd5\u4eae\u70b9",
+        "type": "\u666f\u70b9",
+        "rating": 5,
+        "location": "120.1350,30.2570",
+    }
+    payload = {"origin": "120.1300,30.2590", "destination": "120.1400,30.2550", "mode": "+5"}
+
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *a, **k: [poi])
+
+    # 绕行 601 秒远超 +5 预算 -> 候选全被预算过滤掉 -> 走降级出口
+    def over_budget(origin, destination, mode, waypoint=None):
+        return [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1000,
+            "duration": 1200 if waypoint else 300,
+            "steps": [],
+            "polyline": f"{origin};{destination}",
+        }]
+
+    monkeypatch.setattr("app.routes.api.get_candidate_routes", over_budget)
+    degraded = client.post("/api/route/recommend", json=payload).json()
+
+    assert degraded["detour_minutes"] == 0, "预算内无候选，应走降级出口"
+    assert "baseline_route" in degraded, "降级出口漏了 baseline_route"
+    assert degraded["baseline_route"]["duration"] == 300
+
+    # 同一 payload 下的正常出口
+    def within_budget(origin, destination, mode, waypoint=None):
+        return [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1000,
+            "duration": 400 if waypoint else 300,
+            "steps": [],
+            "polyline": f"{origin};{destination}",
+        }]
+
+    monkeypatch.setattr("app.routes.api.get_candidate_routes", within_budget)
+    normal = client.post("/api/route/recommend", json=payload).json()
+
+    assert normal["detour_minutes"] > 0, "该走正常出口"
+    assert set(normal) - set(degraded) == {"trip_id"}, (
+        f"两个出口的响应形状不一致，差集: {set(normal) ^ set(degraded)}"
+    )
+
+
+def test_baseline_route_stays_wgs84_and_is_not_converted_twice(client, monkeypatch):
+    """P3-4：`baseline_route` 的 polyline 出 route_engine 时已是 WGS-84。
+
+    前端直接用，不要再转一次 —— 再转一次会整体偏移约 450 米（见 P1-4）。
+    这里用兜底路径（无 Key）跑真实演示场景，断言首点就是请求里的起点坐标。
+    """
+    monkeypatch.delenv("AMAP_KEY", raising=False)
+    origin, destination = landmark("dut"), landmark("xinghai")
+
+    body = client.post(
+        "/api/route/recommend",
+        json={"origin": origin, "destination": destination, "mode": "+15"},
+    ).json()
+
+    baseline_points = body["baseline_route"]["polyline"].split(";")
+    assert baseline_points[0] == origin
+    assert baseline_points[-1] == destination

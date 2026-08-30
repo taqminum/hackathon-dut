@@ -34,11 +34,16 @@ export function formatDistance(value) {
   return `${Math.round(num)} 米`
 }
 
-/** 评分保留一位小数 */
-export function formatScore(value) {
+/** 评分保留一位小数。
+ * T5：max 传入时把显示值也 clamp 住。以前只有进度条 clamp（scoreToPercent），
+ * 数字直接显示原值，于是越界数据会显示成 `7.2/7` —— 条填满了，数字却比分母大，
+ * 自相矛盾。后端上界确实是 7.0，越界只可能来自假数据或以后改权重忘了同步，
+ * 两种情况都不该让界面自我否定。 */
+export function formatScore(value, max = null) {
   const num = toNumber(value)
   if (num === null) return '--'
-  return num.toFixed(1)
+  const capped = max === null ? num : Math.min(num, max)
+  return Math.max(0, capped).toFixed(1)
 }
 
 /** 秒 -> "21 分钟" / "1 小时 5 分钟" */
@@ -60,6 +65,16 @@ export function scoreToPercent(value, max = 7) {
   const num = toNumber(value)
   if (num === null) return 0
   return Math.min(100, Math.max(0, Math.round((num / max) * 100)))
+}
+
+/** 高德类型形如 "餐饮服务;咖啡厅;咖啡厅"，取最后一段更具体。
+ * PoiCard 的标签和结果页的推荐理由都用它，两处必须叫同一个名字 ——
+ * 卡片上写「咖啡厅」而理由里写「餐饮服务;咖啡厅;咖啡厅」会像是两个地方。 */
+export function poiTypeLabel(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const parts = raw.split(/[;|]/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : raw
 }
 
 /** 三原色循环，用于列表条目上色 */

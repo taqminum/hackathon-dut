@@ -40,6 +40,30 @@ function withTimeout(client, url, options = {}, timeout = DEFAULT_TIMEOUT) {
   )
 }
 
+/**
+ * T8-3：把「请求根本没走通」翻译成人话。
+ *
+ * `fetch` 连不上时抛的是 `TypeError: Failed to fetch`（超时被 AbortController
+ * 掐断时是 `AbortError`），HomeView 直接把 `err.message` 印在红条上 ——
+ * 屏幕上就是一行英文 `Failed to fetch`，用户不知道是后端没起、还是自己填错了。
+ *
+ * 只翻译**传输层**失败。HTTP 状态码带回来的 `detail` 是后端写给用户看的中文，
+ * 必须原样透传 —— 把 404「未找到可行路线」说成「连不上后端」是更坏的谎。
+ * 两重保障：调用点只在包住 `fetch` 的 try 里用它（`parse` 在 try 之外），
+ * 且认不出的 error 一律原样返回，不套模板。
+ */
+function humanizeTransportError(error, fallbackMessage) {
+  const name = error?.name || ''
+  const message = String(error?.message || '')
+  if (name === 'AbortError' || /aborted/i.test(message)) {
+    return new Error('请求超时，后端没有在预期时间内响应，请稍后重试')
+  }
+  if (error instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(message)) {
+    return new Error('连不上后端服务，请确认后端已启动后重试')
+  }
+  return error instanceof Error ? error : new Error(message || fallbackMessage)
+}
+
 /** 统一解析响应，失败时抛出后端 detail 文案 */
 async function parse(response, fallbackMessage) {
   if (!response.ok) {
@@ -65,11 +89,17 @@ async function withFallback(promiseFactory, fallbackValue) {
  * 推荐路线。core 接口，失败必须抛出，让界面显示错误态。
  */
 export async function recommendRoute({ origin, destination, mode }, client = globalThis.fetch) {
-  const response = await withTimeout(client, buildUrl('/route/recommend'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ origin, destination, mode }),
-  })
+  let response
+  try {
+    response = await withTimeout(client, buildUrl('/route/recommend'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin, destination, mode }),
+    })
+  } catch (error) {
+    // 只包传输层失败。`parse` 在这个 try 之外，后端的中文 detail 不会经过这里。
+    throw humanizeTransportError(error, '推荐接口请求失败')
+  }
 
   return parse(response, '推荐接口请求失败')
 }
@@ -134,7 +164,12 @@ export async function listTrips(client = globalThis.fetch) {
   }, [])
 }
 
-/** 路线反馈。后端未定稿，失败静默，不打断演示 */
+/** 路线反馈。后端未定稿，失败静默，不打断演示。
+ *
+ * T8-4：后端返回 `{ ok, learned: [...] }`，`learned` 是这次真正落到的类目
+ * （归因失败时是空数组）。以前这里把它丢掉了，界面只能凭「按钮点过」变色 ——
+ * 那和「学到了」不是一件事。原样带出来，让界面按真实结果说话。
+ */
 export async function sendFeedback({ tripId, liked, mode, comment = '' }, client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/feedback'), {
@@ -142,9 +177,9 @@ export async function sendFeedback({ tripId, liked, mode, comment = '' }, client
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trip_id: tripId, liked, mode, comment }),
     })
-    await parse(response, '反馈提交失败')
-    return { ok: true }
-  }, { ok: false })
+    const data = await parse(response, '反馈提交失败')
+    return { ok: true, learned: Array.isArray(data?.learned) ? data.learned : [] }
+  }, { ok: false, learned: [] })
 }
 
 /**

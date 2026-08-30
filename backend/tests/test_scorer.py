@@ -89,3 +89,22 @@ def test_affinity_is_clamped_beyond_the_declared_range(scorer):
     assert scorer.score(
         detour_minutes=0, poi_quality=1.0, tag_affinity=-99
     ) == scorer.score(detour_minutes=0, poi_quality=1.0, tag_affinity=-1.0)
+
+
+def test_no_input_combination_can_exceed_seven(scorer):
+    """T5：界面上出现过「7.2/7」—— 数字比分母大，自相矛盾。
+
+    前端现在会把显示值 clamp 到 7（webapp/src/utils/format.js formatScore），
+    但真正的契约在这里：**任何**输入都不能算出 7.0 以上。上面两条只钉了几个点，
+    这条扫一遍越界值、脏值和负绕行，防止以后加维度时从别的路径漏上去。
+    """
+    values = [-99, -1.5, -1.0, -0.3, 0.0, 0.5, 1.0, 1.5, 99, None, "", "abc", float("nan")]
+    detours = [-10, 0, 0.5, 7, 500]
+
+    for detour in detours:
+        for quality in values:
+            for affinity in values:
+                score = scorer.score(
+                    detour_minutes=detour, poi_quality=quality, tag_affinity=affinity
+                )
+                assert 0.0 <= score <= 7.0, (detour, quality, affinity, score)

@@ -2,7 +2,7 @@ import os
 import random
 import threading
 import time
-from math import asin, cos, radians, sin, sqrt
+from math import asin, atan2, cos, degrees, radians, sin, sqrt
 
 import requests
 
@@ -40,13 +40,17 @@ def throttle_amap() -> None:
 # 同一套地标坐标，改一处漏两处的静默退化在结构上不可能发生。
 # base_* 和 polyline 都来自高德实测（见 docs 交接文档），不是估算：
 # 折线按里程从实测的 163/246/222 个点等距抽稀到 7 个点，形状仍贴合真实道路。
-# extra_* 是经由 POI 的额外代价，按模式给出，保证兜底时绕行也落在预算内。
+#
+# R4：这里原本还有一对 `extra_distance` / `extra_duration`
+# （`{None: 0, "+5": 240, "+15": 520, "roam": 780}` 之类），经由 POI 时按模式
+# **加到 distance 上**。那是个假数字：折线只多插了一个点，三个模式的几何一模一样
+# （polyline sha1 全等），而报出的距离却差了 240/520/780 米。现在 base_* 只作为
+# **标定系数的来源**（几何长度 -> 实测里程的比例、以及实测步速），距离和时长一律从
+# 最终折线量出来 —— 见 _build_fallback_route。数字想变，几何就必须真的变。
 DALIAN_SCENARIOS = {
     scenario_key("dut", "xinghai"): {
         "base_distance": 6920,
         "base_duration": 5536,
-        "extra_distance": {None: 0, "+5": 240, "+15": 520, "roam": 780},
-        "extra_duration": {None: 0, "+5": 140, "+15": 300, "roam": 460},
         "polyline": [
             "121.5197,38.8856",
             "121.5329,38.8871",
@@ -60,8 +64,6 @@ DALIAN_SCENARIOS = {
     scenario_key("donggang", "laohutan"): {
         "base_distance": 7322,
         "base_duration": 5858,
-        "extra_distance": {None: 0, "+5": 260, "+15": 620, "roam": 980},
-        "extra_duration": {None: 0, "+5": 160, "+15": 360, "roam": 580},
         "polyline": [
             "121.6785,38.9287",
             "121.6725,38.9219",
@@ -75,8 +77,6 @@ DALIAN_SCENARIOS = {
     scenario_key("xianlu", "fujiazhuang"): {
         "base_distance": 7361,
         "base_duration": 5889,
-        "extra_distance": {None: 0, "+5": 220, "+15": 460, "roam": 720},
-        "extra_duration": {None: 0, "+5": 130, "+15": 280, "roam": 420},
         "polyline": [
             "121.5825,38.9136",
             "121.5850,38.9031",
@@ -268,45 +268,44 @@ def _concat_polylines(first: str, second: str) -> str:
 
 
 def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: str | None) -> dict:
+    """兜底路线。**distance / duration 一律从最终折线量出来**，不查表加常数。
+
+    R4：原来经由 POI 时按模式给 distance 加一个表里的常数（240/520/780 米），
+    而折线只是把 POI 那一个点插进 7 点折线里 —— 三个模式的 polyline sha1 完全相同，
+    却报出三个不同的距离。用户的观感（「三个模式看起来一样」）是准确的，而数字是假的。
+    现在几何是唯一的事实来源：绕行想让距离变长，折线就必须真的变长。
+    """
     scenario = _select_dalian_scenario(origin, destination)
     start = _parse_lng_lat(origin)
     end = _parse_lng_lat(destination)
     mid = _parse_lng_lat(waypoint) if waypoint else None
 
     if scenario:
-        base_distance = scenario["base_distance"]
-        base_duration = scenario["base_duration"]
+        points = _detour_points(scenario["polyline"], mid, _detour_width(mode))
+        # 折线是按里程抽稀过的 7 点直线段，几何长度短于实测里程（实测/几何 =
+        # 1.20 ~ 1.26，比无 scenario 分支的 1.3 更贴近真实道路）。系数和步速都由
+        # base_* 反算，所以「大工→星海 6.9 公里 / 92 分钟」这两个实测数字仍然成立，
+        # 只是不再作为常数直接输出，而是作为标定值参与换算。
+        base_geometry = _polyline_length(scenario["polyline"])
+        factor = scenario["base_distance"] / base_geometry if base_geometry > 0 else 1.3
+        speed = scenario["base_distance"] / max(1, scenario["base_duration"])
     else:
         direct_distance = _haversine_meters(start, end)
         if direct_distance > 50_000:
             raise ValueError("fallback route is too long")
 
-        route_distance = direct_distance
+        points = [start]
         if mid:
-            route_distance = _haversine_meters(start, mid) + _haversine_meters(mid, end)
-        base_distance = max(1, round(route_distance * 1.3))
-        base_duration = max(1, round(base_distance / 1.35))
+            points.append(mid)
+        points.append(end)
+        factor, speed = 1.3, 1.35
 
-    if waypoint and scenario:
-        effective_mode = mode or "+15"
-        extra_distance = (scenario or {}).get("extra_distance") or {}
-        extra_duration = (scenario or {}).get("extra_duration") or {}
-        base_distance += extra_distance.get(effective_mode, 220)
-        base_duration += extra_duration.get(effective_mode, 120)
-
-    points = [start]
-    if mid:
-        points.append(mid)
-    points.append(end)
-
-    if scenario:
-        scenario_points = list(scenario["polyline"])
-        if mid:
-            scenario_points.insert(_waypoint_insert_index(scenario_points, mid), [mid[0], mid[1]])
-
-        polyline = _format_polyline(scenario_points)
-    else:
-        polyline = _format_polyline(points)
+    polyline = _format_polyline(points)
+    # 量的是格式化之后的折线：_format_polyline 会四舍五入到 4 位小数并丢掉重复点，
+    # 量格式化之前的点会和前端画出来的线差上几米，验收标准的 5% 容差留不住这种偏移。
+    geometry = _polyline_length(_parse_polyline(polyline))
+    base_distance = max(1, round(geometry * factor))
+    base_duration = max(1, round(base_distance / speed))
 
     return {
         "source": SOURCE_FALLBACK,
@@ -315,16 +314,203 @@ def _build_fallback_route(origin: str, destination: str, mode: str, waypoint: st
         "demo_mode": scenario is not None,
         "distance": base_distance,
         "duration": base_duration,
-        "steps": [
-            {
-                "instruction": "按推荐路线行走",
-                "road": origin,
-                "distance": str(base_distance),
-                "duration": str(base_duration),
-            }
-        ],
+        "steps": _fallback_steps(polyline, base_distance, base_duration),
         "polyline": polyline,
     }
+
+
+# R4：兜底折线为了接 POI，最多让开几个原顶点。「让开」= 推荐路线不再经过那个点，
+# 于是两条线分岔再合拢 —— 分岔幅度随模式放大，这是「绕多远去接 POI」在几何上的体现。
+# 只有 7 个点可用，所以 1/2/3 已经是这份演示数据能撑开的全部量级。
+_DETOUR_WIDTH = {"+5": 1, "+15": 2, "roam": 3}
+
+
+def _detour_width(mode: str | None) -> int:
+    return _DETOUR_WIDTH.get(mode or "+15", 2)
+
+
+def _detour_points(
+    scenario_polyline,
+    mid: tuple[float, float] | None,
+    width: int = 2,
+) -> list[tuple[float, float]]:
+    """把途经点插进场景折线，并让两条线真的分岔一次。
+
+    只插入一个点的话，推荐折线是基准折线的**严格子序列**（`base_only == 0`）：
+    两条线完全重合，只在 POI 处鼓出几十米，7 公里的图上肉眼分不出来 ——
+    这正是用户说「原路线和推荐路线没区别」的原因。
+
+    所以插入之后再让开离 POI 最近的几个原顶点：推荐路线绕去 POI，基准路线仍走原顶点，
+    两条线**分岔再合拢**，`base_only > 0`，地图上看得见。`width` 决定让开几个，
+    由模式给出。只在「让开之后几何更长」时才让（否则等于抄近道，绕行会变成负数），
+    让不动就保留原样 —— 正确性优先于观感。
+    """
+    points = _coerce_points(scenario_polyline)
+    if mid is None:
+        return points
+
+    index = _waypoint_insert_index(points, mid)
+    result = points[:index] + [mid] + points[index:]
+    mid_index = index
+    baseline_length = _polyline_length(points)
+
+    for _ in range(max(0, width)):
+        # 每轮重算候选：让开一个点之后，剩下哪个离 POI 最近会变。
+        candidates = sorted(
+            (i for i in range(1, len(result) - 1) if i != mid_index),
+            key=lambda i: _haversine_meters(result[i], mid),
+        )
+        for i in candidates:
+            trimmed = result[:i] + result[i + 1 :]
+            if _polyline_length(trimmed) > baseline_length:
+                result = trimmed
+                if i < mid_index:
+                    mid_index -= 1
+                break
+        else:
+            break
+
+    return result
+
+
+def _coerce_points(polyline) -> list[tuple[float, float]]:
+    """`["lng,lat", ...]` / `[[lng, lat], ...]` 都收，统一成 float 二元组。
+
+    `DALIAN_SCENARIOS` 里存的是字符串，`_select_dalian_scenario` 出来的是 list ——
+    `_waypoint_insert_index` 对字符串点会算出错误的索引（float() 收不了 "lng,lat"，
+    但下标取字符会静默给出别的数），所以入口统一。
+    """
+    points: list[tuple[float, float]] = []
+    for point in polyline or []:
+        if isinstance(point, str):
+            points.append(_parse_lng_lat(point))
+        else:
+            points.append((float(point[0]), float(point[1])))
+    return points
+
+
+def _parse_polyline(polyline: str | None) -> list[tuple[float, float]]:
+    points: list[tuple[float, float]] = []
+    for chunk in str(polyline or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            points.append(_parse_lng_lat(chunk))
+        except (ValueError, AttributeError):
+            continue
+    return points
+
+
+def _polyline_length(points) -> float:
+    """折线的球面长度（米）。少于两个点时是 0，由调用方决定怎么兜。"""
+    prepared = _coerce_points(points)
+    return sum(
+        _haversine_meters(prepared[i], prepared[i + 1]) for i in range(len(prepared) - 1)
+    )
+
+
+# 方位角 -> 方向词。八向，边界按 22.5° 均分（0° 是正北，顺时针增大）。
+_BEARING_WORDS = ("北", "东北", "东", "东南", "南", "西南", "西", "西北")
+
+
+def _bearing_degrees(start: tuple[float, float], end: tuple[float, float]) -> float:
+    """从 start 走向 end 的方位角，0~360，0 为正北。"""
+    start_lng, start_lat = map(radians, start)
+    end_lng, end_lat = map(radians, end)
+    delta_lng = end_lng - start_lng
+    y = sin(delta_lng) * cos(end_lat)
+    x = cos(start_lat) * sin(end_lat) - sin(start_lat) * cos(end_lat) * cos(delta_lng)
+    return (degrees(atan2(y, x)) + 360) % 360
+
+
+def _direction_word(start: tuple[float, float], end: tuple[float, float]) -> str:
+    index = int((_bearing_degrees(start, end) + 22.5) % 360 // 45)
+    return _BEARING_WORDS[index]
+
+
+def _fallback_steps(polyline: str, total_distance: int, total_duration: int) -> list[dict]:
+    """兜底路线的分段指引。
+
+    以前这里是硬编码的**单元素**列表，而且 `road` 字段塞的是起点坐标 ——
+    界面上就变成「01 按推荐路线行走 / 121.5197,38.8856 / 7.4 公里 / 1 小时 37 分钟」：
+    一整条路只有一步（`RouteSteps` 的折叠交互因此永远不出现），
+    路名的位置印着一串经纬度。
+
+    现在按折线的相邻点分段，方向词由方位角推出。两条硬约束：
+
+    * `road` **不放坐标**。兜底数据没有真实路名，宁可留空 ——
+      `RouteSteps.vue` 的 `v-if="step.road"` 会自动隐掉这一行。
+    * 各段的 distance / duration **之和必须等于**整条路线的总值。
+      逐段按比例取整会累积误差，所以用「前缀和的差」来分配：
+      第 i 段拿到 `round(总量 * 累计里程/总里程)` 减去已分配的部分，
+      最后一段自然吃掉全部余数，加起来恒等于总量。
+    """
+    points = []
+    for chunk in str(polyline or "").split(";"):
+        if not chunk:
+            continue
+        try:
+            lng, lat = chunk.split(",", 1)
+            points.append((float(lng), float(lat)))
+        except ValueError:
+            continue
+
+    legs = [
+        (points[i], points[i + 1], _haversine_meters(points[i], points[i + 1]))
+        for i in range(len(points) - 1)
+    ]
+    legs = [leg for leg in legs if leg[2] > 0]
+
+    if not legs:
+        # 折线退化（单点、或解析不出）时给一条不带坐标的兜底，总量照旧对得上
+        return [
+            {
+                "instruction": "按推荐路线行走",
+                "road": "",
+                "distance": str(total_distance),
+                "duration": str(total_duration),
+            }
+        ]
+
+    geometric_total = sum(leg[2] for leg in legs)
+    steps: list[dict] = []
+    walked = 0.0
+    given_distance = 0
+    given_duration = 0
+
+    for index, (start, end, meters) in enumerate(legs):
+        walked += meters
+        ratio = walked / geometric_total
+        # 前缀和分配：最后一段的 ratio 恰好是 1.0，于是余数全部落在它身上
+        distance = round(total_distance * ratio) - given_distance
+        duration = round(total_duration * ratio) - given_duration
+        given_distance += distance
+        given_duration += duration
+
+        word = _direction_word(start, end)
+        if len(legs) == 1:
+            # 折线只有起终两点（非演示场景的直连兜底）时整条就是一段，
+            # 说「继续」或「到达终点」都像漏了前面几步
+            instruction = f"从起点向{word}走约 {distance} 米到达终点"
+        elif index == len(legs) - 1:
+            instruction = f"向{word}走约 {distance} 米后到达终点"
+        elif index == 0:
+            instruction = f"从起点向{word}走约 {distance} 米"
+        else:
+            instruction = f"继续向{word}走约 {distance} 米"
+
+        steps.append(
+            {
+                "instruction": instruction,
+                # 兜底数据没有真实路名。留空而不是填坐标，见本函数 docstring。
+                "road": "",
+                "distance": str(distance),
+                "duration": str(duration),
+            }
+        )
+
+    return steps
 
 
 def _format_polyline(points) -> str:
@@ -373,16 +559,7 @@ def point_to_route_meters(point: str | None, polyline: str | None) -> float | No
     except (ValueError, AttributeError):
         return None
 
-    points: list[tuple[float, float]] = []
-    for chunk in str(polyline or "").split(";"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        try:
-            points.append(_parse_lng_lat(chunk))
-        except (ValueError, AttributeError):
-            continue
-
+    points = _parse_polyline(polyline)
     if len(points) < 2:
         return None
 

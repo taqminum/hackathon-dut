@@ -115,6 +115,10 @@ def test_explore_pois_along_route_discards_malformed_remote_pois():
             pois = explore_pois_along_route("116.397428,39.90923", "116.407526,39.90403", ["景点"], 300)
 
     # location 是高德的 GCJ-02，对外要转成 WGS-84；rating 从 biz_ext 里取并转成 float。
+    # R6：address / tel / opentime / photo 是给前端卡片展开用的四个字段。
+    # 这条 POI 的响应里一个都没有，那就必须是**空串** —— 前端见空串整行不渲染。
+    # 键必须在（缺键和空串在 JS 里都是假值，但少一个键会让前端的字段清单和
+    # 后端脱钩，改名字时没人发现），值必须是空的（编一个地址比不给更糟）。
     assert pois == [
         {
             "name": "有效亮点",
@@ -122,6 +126,10 @@ def test_explore_pois_along_route_discards_malformed_remote_pois():
             "distance": None,
             "rating": 4.2,
             "location": "120.095193,30.202275",
+            "address": "",
+            "tel": "",
+            "opentime": "",
+            "photo": "",
         }
     ]
 
@@ -294,3 +302,143 @@ def test_explore_pois_along_route_ignores_malformed_polyline():
 
     # 折线不可用时退回中点单点查询，而不是抛错。
     assert mock_get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# R6：卡片展开详情需要的四个扩展字段
+# ---------------------------------------------------------------------------
+
+
+def test_around_query_asks_for_extensions_all():
+    """不传 extensions=all 的话，地址/电话/营业时间/照片根本不会回来。
+
+    这是 R6 的前提：前端能不能展开详情，取决于这一个请求参数。
+    参数免费（同一次请求），代价只是响应变大。
+    """
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {"pois": []}
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            explore_pois_along_route("116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300)
+
+    assert mock_get.call_args.kwargs["params"]["extensions"] == "all"
+
+
+def test_extension_fields_are_carried_through():
+    """字段齐全的 POI：四个扩展字段原样带出，photo 取第一张的 url。"""
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "pois": [
+                {
+                    "name": "某咖啡",
+                    "type": "餐饮服务;咖啡厅;咖啡厅",
+                    "location": "120.1,30.2",
+                    "address": "凌工路 2 号",
+                    "tel": "0411-8470-9988",
+                    "biz_ext": {"rating": "4.4", "opentime": "07:30-21:00"},
+                    "photos": [
+                        {"title": [], "url": "https://store.is.autonavi.com/a.jpg"},
+                        {"title": "内景", "url": "https://store.is.autonavi.com/b.jpg"},
+                    ],
+                }
+            ]
+        }
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route(
+                "116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300
+            )
+
+    assert pois[0]["address"] == "凌工路 2 号"
+    assert pois[0]["tel"] == "0411-8470-9988"
+    assert pois[0]["opentime"] == "07:30-21:00"
+    assert pois[0]["photo"] == "https://store.is.autonavi.com/a.jpg"
+
+
+def test_empty_list_fields_do_not_leak_as_text():
+    """高德无数据时给的是空数组 `[]`，不是 null。
+
+    `_extract_rating` 的注释里已经记过这个坑（`float([])` 会抛）。文本字段上
+    同样的形态会变成另一种事故：`str([])` 得到字面量 `'[]'`，前端见非空字符串
+    就照着印，屏幕上出现「电话 []」。四个字段都必须收敛成空串。
+    """
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "pois": [
+                {
+                    "name": "只有基础字段的店",
+                    "type": "餐饮服务;中餐厅;中餐厅",
+                    "location": "120.1,30.2",
+                    "address": [],
+                    "tel": [],
+                    "photos": [],
+                    "biz_ext": {"rating": "4.5", "opentime": []},
+                }
+            ]
+        }
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route(
+                "116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300
+            )
+
+    assert pois[0]["rating"] == 4.5
+    for field in ("address", "tel", "opentime", "photo"):
+        assert pois[0][field] == "", f"{field} 应当是空串，实际 {pois[0][field]!r}"
+
+
+def test_list_valued_address_takes_the_first_entry():
+    """多门址的 POI 里 address 会是列表。取第一个非空项，不是整个列表的字面量。"""
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "pois": [
+                {
+                    "name": "两个门的店",
+                    "type": "餐饮服务;中餐厅;中餐厅",
+                    "location": "120.1,30.2",
+                    "address": ["", "中山路 1 号", "人民路 2 号"],
+                    # 第一张没有 url，photo 要跳到第二张而不是给空
+                    "photos": [{"title": "封面"}, {"url": "https://x.invalid/c.jpg"}],
+                    "biz_ext": {"rating": "4.5"},
+                }
+            ]
+        }
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route(
+                "116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300
+            )
+
+    assert pois[0]["address"] == "中山路 1 号"
+    assert pois[0]["photo"] == "https://x.invalid/c.jpg"
+
+
+def test_blank_text_fields_collapse_to_empty():
+    """纯空白的字段按「没有」处理，否则前端会渲染一行空值出来。"""
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "pois": [
+                {
+                    "name": "空白字段的店",
+                    "type": "餐饮服务;中餐厅;中餐厅",
+                    "location": "120.1,30.2",
+                    "address": "   ",
+                    "tel": "\t",
+                    "biz_ext": {"rating": "4.5", "opentime": " "},
+                }
+            ]
+        }
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route(
+                "116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300
+            )
+
+    assert pois[0]["address"] == ""
+    assert pois[0]["tel"] == ""
+    assert pois[0]["opentime"] == ""

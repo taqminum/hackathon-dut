@@ -155,6 +155,10 @@ def _query_around(location_wgs: str, types: list[str], radius: int) -> list[dict
         "radius": radius,
         "offset": 20,
         "page": 1,
+        # R6：不传这个的话响应里只有 name/type/distance/location 和 biz_ext.rating，
+        # 地址、电话、营业时间、照片一个都不回来 —— 卡片展开就没有东西可展。
+        # 同一次请求，不额外计费，代价只是响应变大。
+        "extensions": "all",
         "key": os.getenv("AMAP_KEY"),
     }
 
@@ -184,15 +188,60 @@ def _query_around(location_wgs: str, types: list[str], radius: int) -> list[dict
 
 
 def _normalize_amap_poi(poi: dict, poi_type: str) -> dict:
-    """高德 POI -> 对外结构。location 从 GCJ-02 转成 WGS-84，评分从 biz_ext 里取。"""
+    """高德 POI -> 对外结构。location 从 GCJ-02 转成 WGS-84，评分从 biz_ext 里取。
+
+    R6：后四个字段（address / tel / opentime / photo）是给前端卡片展开用的。
+    取不到就是空串 —— **不编造**，前端见空串整行不渲染，不摆「暂无」占位。
+    """
     location = poi.get("location")
+    biz_ext = poi.get("biz_ext")
     return {
         "name": poi.get("name"),
         "type": poi_type,
         "distance": poi.get("distance"),
         "rating": _extract_rating(poi),
         "location": gcj02_str_to_wgs84_str(location) or location,
+        "address": _extract_text(poi.get("address")),
+        "tel": _extract_text(poi.get("tel")),
+        # 营业时间在 biz_ext 里，和 rating 同一个坑（见 _extract_rating）
+        "opentime": _extract_text(
+            biz_ext.get("opentime") if isinstance(biz_ext, dict) else None
+        ),
+        "photo": _extract_photo(poi.get("photos")),
     }
+
+
+def _extract_text(value) -> str:
+    """高德的文本字段 -> 干净的字符串，取不到就是空串。
+
+    R6：无数据时高德给的是**空数组** `[]` 而不是 `null`（`_extract_rating` 的
+    注释里已经记过这个坑），`str([])` 会得到字面量 `'[]'` 印到屏幕上。
+    另有两种形态要收：`address` 偶尔是 `["中山路1号", ...]` 这样的列表（多个
+    门址），取第一个非空项；纯空白串按空处理。
+    """
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = _extract_text(item)
+            if text:
+                return text
+        return ""
+    if value is None or isinstance(value, dict):
+        return ""
+    return str(value).strip()
+
+
+def _extract_photo(photos) -> str:
+    """首张照片的 URL。`photos` 是 `[{"title": ..., "url": ...}, ...]`，
+    无数据时同样是 `[]`。取第一个有 url 的，取不到就空串 —— 前端不渲染图位。
+    """
+    if not isinstance(photos, (list, tuple)):
+        return ""
+    for photo in photos:
+        if isinstance(photo, dict):
+            url = _extract_text(photo.get("url"))
+            if url:
+                return url
+    return ""
 
 
 def _extract_rating(poi: dict) -> float:

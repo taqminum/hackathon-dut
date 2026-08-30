@@ -136,11 +136,68 @@ describe('HomeView', () => {
     await flushPromises()
 
     expect(api.recommendRoute).toHaveBeenCalledWith({
-      origin: '121.6068,38.9180',
-      destination: '121.5854,38.9325',
+      origin: '121.5197,38.8856',
+      destination: '121.5839,38.8816',
       mode: '+15',
     })
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['+15'])
+  })
+
+  // R2：一键体验过去把坐标灌回输入框，用户看到的是「121.5197,38.8856」。
+  // 现在输入框显示地名，坐标退到隐藏状态里，提交的还是坐标（上一条已经验了）。
+  it('shows place names in the inputs after a demo scenario, not raw coordinates', async () => {
+    const api = makeApi()
+    const wrapper = mountHome(api)
+
+    await wrapper.findAll('.demo')[0].trigger('click')
+    await flushPromises()
+
+    const [origin, destination] = wrapper.findAll('input').map((input) => input.element.value)
+    const COORD = /^\d+\.\d+,\d+\.\d+$/
+
+    expect(origin).not.toMatch(COORD)
+    expect(destination).not.toMatch(COORD)
+    // 而且不能是空的 —— 「不显示坐标」不能靠什么都不显示来达成
+    expect(origin.length).toBeGreaterThan(0)
+    expect(destination.length).toBeGreaterThan(0)
+  })
+
+  // R3：从下拉里选门店 —— 框里是店名，发出去的是店的坐标。
+  // 这条盯的是 PlaceInput.choose 与 onOriginPick 的配合：choose 只回填地名，
+  // 坐标靠 pick 事件传给 HomeView 存进 originCoord。任何一头漏了，
+  // 要么框里印经纬度，要么发给后端的是「麦当劳(青泥洼桥店)」。
+  it('submits the picked store coordinate while showing its name', async () => {
+    const api = makeApi({
+      suggestPlaces: vi.fn(async () => [
+        { name: '麦当劳(青泥洼桥店)', address: '中山区友好路 88 号', location: '121.6335,38.9187' },
+        { name: '麦当劳(西安路店)', address: '沙河口区西安路 123 号', location: '121.5893,38.9142' },
+      ]),
+    })
+    const wrapper = mountHome(api)
+    const inputs = wrapper.findAll('input')
+
+    await inputs[0].setValue('麦当劳')
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    await flushPromises()
+    await inputs[0].trigger('focus')
+
+    const options = wrapper.findAll('[role="option"]')
+    expect(options.length).toBeGreaterThanOrEqual(2)
+
+    await options[0].trigger('mousedown')
+    await flushPromises()
+
+    // 框里是店名，不是坐标
+    expect(wrapper.findAll('input')[0].element.value).toBe('麦当劳(青泥洼桥店)')
+
+    await wrapper.findAll('input')[1].setValue('121.5839,38.8816')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    // 发出去的是选中门店的坐标
+    expect(api.recommendRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: '121.6335,38.9187', destination: '121.5839,38.8816' }),
+    )
   })
 
   it('swaps origin and destination', async () => {

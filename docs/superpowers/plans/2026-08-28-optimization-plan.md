@@ -27,7 +27,7 @@
 | P2-3 `pois` 恒 1 个 | 已完成（沿选中路线 400 m 内按评分取 top-3） |
 | P2-4 roam 无绕行上限 | 已完成（`roam` = 30 分钟，即 `+15` 的两倍） |
 | P2-5 响应形状不一致 | 已完成（高德分支补齐 `origin`/`destination`/`demo_mode`，有同形断言） |
-| P2-6 fallback 无转向指令 | 已完成（兜底路线现在有多段 steps） |
+| P2-6 fallback 无转向指令 | 已完成（`route_engine.py` 的 `_bearing_degrees` / `_direction_word` / `_fallback_steps` 按 polyline 方位角分段；`test_route_engine.py` 6 个用例钉住分段数、`road` 不含坐标、每段距离/时长求和等于总数、方向词跟着 polyline 走、退化 polyline 不崩、方位角计入纬度收敛） |
 | P2-7 坐标缺失落到北京 | 已完成（改抛 `ValueError` → 404；有 AST 卫兵测试防止写死坐标回归） |
 | P2-8 死代码清理 | 已完成（`_try_parse_coord`、`RecommendRequest`、`fetchPoiDetail`、`map-loader.js` 已删；`PreferenceManager` 按 P2-2 接活，不再是死类） |
 | P3-1 ~ P3-8 | 全部未开始（无 vue-router、无 manifest、无定位） |
@@ -358,9 +358,27 @@
 
 #### P2-6 fallback 路线没有任何转向指令 【已完成】
 
-- `route_engine.py:149-156` 的 steps 只有一条「按推荐路线行走」。
-  结果页的「路线指引」区块在演示时永远只有 1 段，`RouteSteps.vue` 的折叠/展开能力用不上。
-- 改法：按 polyline 相邻点生成分段，每段用方位角推「向东北走约 X 米」这类文案。
+> 说明：本条曾在 2026-08-28 被三处标成【已完成】而实际未实现（`git log -S"_bearing"`
+> 当时是空的）。2026-08-29 的收尾轮真正补上，下面是实现后的状态。
+
+- 原问题：`route_engine.py` 的 steps 只有一条「按推荐路线行走」，且 `road` 字段塞的是
+  起点坐标串。结果页的「路线指引」区块在演示时永远只有 1 段，`RouteSteps.vue`
+  的折叠/展开（`collapsedCount: 4`）能力用不上，`road` 位置上还露出一串经纬度。
+- 已改成：`_bearing_degrees`（球面方位角，计入纬度收敛）→ `_direction_word`
+  （八向，`int((bearing + 22.5) % 360 // 45)`）→ `_fallback_steps` 按 polyline
+  相邻点合并成若干段，文案形如「沿凌工路向西步行」，`road` 只放路名占位、绝不放坐标。
+  每段的距离/时长用前缀和分配，保证整数逐段求和**恰好等于**路线总数，不会出现
+  「四段加起来比总里程少 3 米」。
+- 测试：`backend/tests/test_route_engine.py` 的
+  `test_fallback_route_is_split_into_multiple_steps`、
+  `test_fallback_steps_never_put_coordinates_in_the_road_field`、
+  `test_fallback_step_distances_and_durations_sum_to_the_route_totals`、
+  `test_fallback_step_directions_follow_the_polyline`、
+  `test_fallback_steps_survive_a_degenerate_polyline`、
+  `test_bearing_accounts_for_latitude_convergence`。
+- 屏幕验证：7 公里兜底路线渲染出 6 段（1493/1473/986/1185/1135/1168 米），
+  `.steps__road` 为 0 个（原来露坐标的位置现在什么都不显示），折叠按钮
+  4 → 6 → 4 往返正常，控制台无报错。
 
 #### P2-7 坐标缺失时默认落到北京 【已完成】
 
@@ -540,7 +558,7 @@
 | 4 | P3-1 加 vue-router，起终点进 query | A | 1.5 h | 顺带解决分享功能 |
 | ~~5~~ **已完成** | P2-1 评分满分对齐（7 vs 10） | B 或 A | 15 min | 一行改动，评分条不再永远填不满 |
 | 6 | P3-3 点 POI 时 `panTo` | A | 15 min | 一行改动，联动手感明显变好 |
-| ~~7~~ **已完成** | P2-6 fallback 生成分段转向指令 | B | 1 h | 让「路线指引」区块不再只有 1 段 |
+| ~~7~~ **已完成**（2026-08-29 收尾轮补做，此前误标） | P2-6 fallback 生成分段转向指令 | B | 1 h | 让「路线指引」区块不再只有 1 段 |
 | 8 | P3-2 地图选点 + 我的位置 | A | 1.5 h | 评委最容易追问的交互缺失 |
 | 9 | P3-7 补 `aria-live` + combobox 关联属性 | A | 40 min | 无障碍从「基础达标」到「完整」 |
 | 10 | P3-5 PWA manifest + 图标 | A | 1 h | 若走 PWABuilder 打 APK，这是前置 |

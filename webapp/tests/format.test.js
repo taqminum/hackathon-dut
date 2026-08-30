@@ -50,6 +50,12 @@ describe('format utils', () => {
     expect(formatScore(6.5)).toBe('6.5')
     expect(formatScore('7')).toBe('7.0')
     expect(formatScore(null)).toBe('--')
+    // T5：传了 max 就必须 clamp，否则界面会印出「7.2/7」
+    expect(formatScore(7.2, 7)).toBe('7.0')
+    expect(formatScore(6.4, 7)).toBe('6.4')
+    expect(formatScore(-1, 7)).toBe('0.0')
+    // 不传 max 保持原值，别的调用方不受影响
+    expect(formatScore(9)).toBe('9.0')
   })
 
   it('maps score to a clamped percentage', () => {

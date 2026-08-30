@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { SCORE_MAX } from '../constants.js'
 import { formatScore, scoreToPercent } from '../utils/format.js'
 
 /**
@@ -13,13 +14,14 @@ import { formatScore, scoreToPercent } from '../utils/format.js'
  */
 const props = defineProps({
   score: { type: [Number, String], default: null },
-  max: { type: Number, default: 7 },
-  segments: { type: Number, default: 7 },
+  max: { type: Number, default: SCORE_MAX },
+  segments: { type: Number, default: SCORE_MAX },
 })
 
 const percent = computed(() => scoreToPercent(props.score, props.max))
 const filled = computed(() => Math.round((percent.value / 100) * props.segments))
-const display = computed(() => formatScore(props.score))
+// T5：显示值也 clamp 到 max，否则越界数据会显示成「7.2/7」这种自相矛盾的读数。
+const display = computed(() => formatScore(props.score, props.max))
 </script>
 
 <template>

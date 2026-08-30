@@ -33,13 +33,17 @@ describe('PlaceInput', () => {
     expect(options[0].text()).toContain('星海广场')
   })
 
-  it('fills the coordinate when picking a landmark', async () => {
+  // R3：改过来了 —— 选中回填的是地名，坐标走 `pick`。
+  // 原来这条断言把「输入框里显示经纬度」锁成了预期行为，和 R2 修的是同一个毛病。
+  it('fills the place name when picking a landmark and hands the coordinate to the parent', async () => {
     const wrapper = mountInput({ modelValue: '星海' })
     await wrapper.find('input').trigger('focus')
     await wrapper.findAll('[role="option"]')[0].trigger('mousedown')
 
-    expect(wrapper.emitted('update:modelValue')).toEqual([['121.5854,38.9325']])
+    expect(wrapper.emitted('update:modelValue')).toEqual([['星海广场']])
+    // 坐标没丢，只是换了出口：上层从 pick 里取，存进 originCoord 提交时用
     expect(wrapper.emitted('pick')[0][0].name).toBe('星海广场')
+    expect(wrapper.emitted('pick')[0][0].location).toBe('121.5839,38.8816')
   })
 
   it('uses remote suggestions when the api returns results', async () => {
@@ -92,7 +96,8 @@ describe('PlaceInput', () => {
     expect(wrapper.find('.place__option--active').exists()).toBe(true)
 
     await input.trigger('keydown', { key: 'Enter' })
-    expect(wrapper.emitted('update:modelValue')).toEqual([['121.5854,38.9325']])
+    expect(wrapper.emitted('update:modelValue')).toEqual([['星海广场']])
+    expect(wrapper.emitted('pick')[0][0].location).toBe('121.5839,38.8816')
   })
 
   it('closes the list on escape', async () => {

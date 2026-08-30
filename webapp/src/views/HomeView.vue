@@ -5,6 +5,7 @@ import PlaceInput from '../components/PlaceInput.vue'
 import StateBlock from '../components/StateBlock.vue'
 import { DEFAULT_MODE, DEMO_SCENARIOS, findMode } from '../constants.js'
 import { useApi } from '../composables/useApi.js'
+import { isCoordString } from '../utils/geo.js'
 import { loadHistory, pushHistory, clearHistory } from '../utils/history.js'
 
 /**
@@ -24,8 +25,21 @@ const mode = computed({
   set: (value) => emit('update:modelValue', value),
 })
 
+// R2：输入框里显示什么。快速体验/历史记录填的是**地名**，坐标另存在
+// originCoord 里 —— 以前这里直接塞坐标串，于是框里是 `121.6785,38.9287`。
+// 上一轮 T1 修的是结果页标题（走 originLabel 兜底），首页输入框没跟着修，
+// 所以出现了「标题对了、输入框还是坐标」。
 const origin = ref('')
 const destination = ref('')
+// R2：提交时优先用的坐标。后端对坐标串支持最好（见 PlaceInput 的注释），
+// 所以显示地名不等于丢掉坐标：两者并存，payload 取坐标。
+// 手输入或从下拉选中都会把它清掉（那两种情况下 origin 自己就是要发的值）。
+const originCoord = ref('')
+const destinationCoord = ref('')
+// T1：人类可读的地名，只用于显示。发给后端的值由 originCoord/origin 决定，
+// 不能被标签污染 —— 那两个字段有坐标不变量，smoke 也钉着它们。
+const originLabel = ref('')
+const destinationLabel = ref('')
 const loading = ref(false)
 const error = ref('')
 const touched = ref(false)
@@ -42,6 +56,45 @@ function swap() {
   const previous = origin.value
   origin.value = destination.value
   destination.value = previous
+  // 标签要跟着值一起换，否则交换后标题会把「星海广场」标到大工的坐标上
+  const previousLabel = originLabel.value
+  originLabel.value = destinationLabel.value
+  destinationLabel.value = previousLabel
+  // R2：坐标也是三元组的一部分，漏了它交换后会拿另一头的坐标去查
+  const previousCoord = originCoord.value
+  originCoord.value = destinationCoord.value
+  destinationCoord.value = previousCoord
+}
+
+/** 手输入时标签失效：用户输的是地名就用原文当标签，是坐标则没有标签。
+ * 从下拉选中会走 onPick 覆盖掉这里的值。
+ *
+ * R2：手输入同时让 originCoord 失效 —— 用户把「大连理工大学」改成「东港」之后，
+ * 再拿大工的坐标去提交就是查了个用户没要的地方。 */
+function onOriginInput(next) {
+  originLabel.value = isCoordString(next) ? '' : next.trim()
+  originCoord.value = ''
+}
+
+function onDestinationInput(next) {
+  destinationLabel.value = isCoordString(next) ? '' : next.trim()
+  destinationCoord.value = ''
+}
+
+/** PlaceInput 选中某项：输入框里现在是地名（R3 改的），坐标从 option 里取。
+ *
+ * 触发顺序是 `update:modelValue` 先、`pick` 后，所以 onOriginInput 会先把
+ * originCoord 清成空串、把 originLabel 设成地名，这里再把坐标补回去。
+ * 顺序反了就会「选了门店但发的是门店名」，依赖的是 PlaceInput.choose 的 emit 次序。
+ */
+function onOriginPick(option) {
+  originLabel.value = option?.name || ''
+  originCoord.value = isCoordString(option?.location) ? option.location : ''
+}
+
+function onDestinationPick(option) {
+  destinationLabel.value = option?.name || ''
+  destinationCoord.value = isCoordString(option?.location) ? option.location : ''
 }
 
 /**
@@ -67,12 +120,25 @@ async function handleSubmit(modeOverride) {
     const override = typeof modeOverride === 'string' ? modeOverride : ''
 
     const payload = {
-      origin: origin.value.trim(),
-      destination: destination.value.trim(),
+      // R2：坐标优先。输入框里显示的是地名（`origin`），但后端对坐标串支持最好，
+      // 所以快速体验/历史记录带来的坐标要盖过显示值。手输入过就没有坐标了，
+      // 此时直接发地名，后端走 geocode。
+      origin: (originCoord.value || origin.value).trim(),
+      destination: (destinationCoord.value || destination.value).trim(),
       mode: override || mode.value,
+      // T1：只用于显示。后端不认这两个字段（Body(..., embed=True) 逐字段取值，
+      // 多余的键会被忽略），所以带上它们不会破坏请求。
+      originLabel: originLabel.value.trim(),
+      destinationLabel: destinationLabel.value.trim(),
     }
 
-    const result = await api.recommendRoute(payload)
+    // 显式只发三个字段：标签是展示用的，不进请求体。
+    // 靠 recommendRoute 内部解构来过滤是隐性依赖，改那边就会把标签漏给后端。
+    const result = await api.recommendRoute({
+      origin: payload.origin,
+      destination: payload.destination,
+      mode: payload.mode,
+    })
 
     if (!result?.route) {
       error.value = '未找到推荐路线，请调整起终点后重试'
@@ -88,19 +154,47 @@ async function handleSubmit(modeOverride) {
   }
 }
 
-function fillDemo(newOrigin, newDestination, newMode) {
-  origin.value = newOrigin
-  destination.value = newDestination
+/** labels 可选：演示场景与历史记录都带地名，手动调用时不传就按输入内容推断。
+ *
+ * R2：带 labels 时输入框显示地名，原来的坐标存进 originCoord 供提交用。
+ * 不带 labels 时（手动调用、或历史记录没存地名）退回原行为：输入框就是要发的值。
+ */
+function fillDemo(newOrigin, newDestination, newMode, labels = null) {
   mode.value = newMode
+  // 标签在提交前就要落定：payload 在 handleSubmit 里组装，晚一帧就来不及了
+  if (labels) {
+    originLabel.value = labels.origin || ''
+    destinationLabel.value = labels.destination || ''
+    // 有地名就显示地名，坐标退到 originCoord。地名缺失的那一头保持原值，
+    // 免得输入框空着让人以为没填。
+    origin.value = labels.origin || newOrigin
+    destination.value = labels.destination || newDestination
+    originCoord.value = labels.origin && isCoordString(newOrigin) ? newOrigin : ''
+    destinationCoord.value =
+      labels.destination && isCoordString(newDestination) ? newDestination : ''
+  } else {
+    origin.value = newOrigin
+    destination.value = newDestination
+    onOriginInput(newOrigin)
+    onDestinationInput(newDestination)
+  }
   return handleSubmit(newMode)
 }
 
 function applyScenario(scenario) {
-  return fillDemo(scenario.origin, scenario.destination, scenario.mode)
+  // T1：DEMO_SCENARIOS 本来就带 originLabel / destinationLabel，
+  // 以前这里只传坐标，地名在源头就被丢掉了，结果页只能显示经纬度。
+  return fillDemo(scenario.origin, scenario.destination, scenario.mode, {
+    origin: scenario.originLabel,
+    destination: scenario.destinationLabel,
+  })
 }
 
 function applyHistory(item) {
-  return fillDemo(item.origin, item.destination, item.mode || mode.value)
+  return fillDemo(item.origin, item.destination, item.mode || mode.value, {
+    origin: item.originLabel,
+    destination: item.destinationLabel,
+  })
 }
 
 function removeHistory() {
@@ -148,6 +242,8 @@ defineExpose({ handleSubmit, fillDemo })
             :disabled="loading"
             :invalid="originInvalid"
             :suggest-fn="suggest"
+            @update:model-value="onOriginInput"
+            @pick="onOriginPick"
           />
           <button
             type="button"
@@ -167,6 +263,8 @@ defineExpose({ handleSubmit, fillDemo })
             :disabled="loading"
             :invalid="destinationInvalid"
             :suggest-fn="suggest"
+            @update:model-value="onDestinationInput"
+            @pick="onDestinationPick"
           />
         </div>
 
@@ -216,7 +314,9 @@ defineExpose({ handleSubmit, fillDemo })
         <ul class="history">
           <li v-for="item in history" :key="`${item.origin}-${item.destination}-${item.mode}`">
             <button type="button" class="history__item" :disabled="loading" @click="applyHistory(item)">
-              <span class="bh-mono history__pair">{{ item.origin }} → {{ item.destination }}</span>
+              <span class="history__pair" :class="{ 'bh-mono': !item.originLabel && !item.destinationLabel }">
+                {{ item.originLabel || item.origin }} → {{ item.destinationLabel || item.destination }}
+              </span>
               <span class="history__mode">{{ findMode(item.mode).label }}</span>
             </button>
           </li>

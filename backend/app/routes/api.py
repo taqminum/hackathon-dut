@@ -30,6 +30,20 @@ preferences = PreferenceManager()
 MAX_DETOUR_MINUTES = {"+5": 5, "+15": 15, "roam": 30}
 SUPPORTED_MODES = {"+5", "+15", "roam"}
 
+# R4：三个模式过去只在「预算上限」上不同，而预算在候选评估阶段就已经卡过一次，
+# 进到选优的候选**都**满足上限 —— 于是三个模式挑出同一个 POI、同一条折线，
+# 用户看到的三份结果只有查表加出来的假数字不一样。
+#
+# 真正的差异应该是「愿意为一个地方偏离主路多远」：`+5` 是顺手一绕，只肯要贴着
+# 路线的地方；`roam` 是随便走走，远一点也无妨。这里的值是**排序时**每 100 米
+# 离线距离扣的分（不进入返回给前端的 score —— ScoreMeter 是 7 分制的探索价值，
+# 掺进模式偏好就变成两个量纲了）。
+#
+# 0.6 这个量级是照 MIN_RATING 到 5 分之间的分差定的：评分差 0.3 分（4.3 vs 4.6）
+# 约等于 0.24 分的 quality_bonus 差，所以 +5 下 50 米的额外离线距离就足以翻盘，
+# 而 roam 完全不在乎距离、只看分。
+DETOUR_APPETITE = {"+5": 0.6, "+15": 0.2, "roam": 0.0}
+
 # 每个候选要两次高德步行调用（步行接口不支持 waypoint，只能两段拼接）。
 # 截断到 3 个是为了控制配额：一次请求约 7 次调用。
 MAX_CANDIDATES = 3
@@ -38,7 +52,8 @@ MAX_CANDIDATES = 3
 MAX_WORKERS = 2
 # 整个 recommend 的总预算。超时就用已经算完的候选，不空手而归。
 TOTAL_BUDGET_SECONDS = 8.0
-# 沿线采样每个点的搜索半径。三点覆盖整条路线，单点半径可以放大到 400 米。
+# 沿线采样每个点的搜索半径。三点覆盖整条路线，搜索半径可以比最终展示的
+# 「贴着路线」阈值更宽；候选先广搜，_collect_highlights 再按真实折线过滤。
 POI_SEARCH_RADIUS = 400
 
 # 返回给前端的沿途亮点上限。第一个必定是被选中的那个 POI（路线真的经过它），
@@ -46,8 +61,8 @@ POI_SEARCH_RADIUS = 400
 MAX_RETURNED_POIS = 3
 # 「顺路」的判定半径。超过这个距离就不能说「沿途会经过」——
 # 卖「偶遇」的产品不能在这句话上注水，宁可只返回一个亮点。
-# 400 米约等于步行 5 分钟的绕行，与 POI_SEARCH_RADIUS 同量级。
-NEARBY_POI_METERS = 400
+# 150 米足够覆盖一个街区内的旁边亮点，同时不会把地图上的标记放到另一条街。
+NEARBY_POI_METERS = 150
 
 INPUTTIPS_URL = "https://restapi.amap.com/v3/assistant/inputtips"
 # 收藏是进程内存储：演示够用，重启即失。要持久化再接数据库，
@@ -143,6 +158,10 @@ def recommend_route(
                 baseline, mode, [], resolved_origin, resolved_destination
             ),
             "route": baseline,
+            # P3-4：两个出口都要带 baseline_route，否则响应形状变成条件式的 ——
+            # 前端拿不到就静默不画灰虚线，表现为「有时候有对比、有时候没有」且不报错，
+            # 正是 P2-5 修过的那类隐性依赖。这里降级后推荐路线就是基准本身。
+            "baseline_route": baseline,
         }
 
     highlights = _collect_highlights(chosen, pois)
@@ -156,6 +175,9 @@ def recommend_route(
             chosen["route"], mode, highlights, resolved_origin, resolved_destination
         ),
         "route": chosen["route"],
+        # P3-4：基准路线原样带出，前端用灰虚线同图画上，「换掉了什么」才看得见。
+        # polyline 出 route_engine 时已经是 WGS-84，前端直接用，再转一次会偏约 450 米。
+        "baseline_route": baseline,
         # 反馈要能归因到具体的 POI 类型才有意义（见 PreferenceManager）。
         # 前端 ResultView 已经在反馈时回传 result.trip_id，所以这里发一个
         # 轻量的 ticket 出去，不需要改前端 bundle 就能闭环。
@@ -174,8 +196,15 @@ def _collect_highlights(chosen: dict, pois: list) -> list[dict]:
     不能把一个可能在两公里外的店说成顺路。
     """
     chosen_poi = chosen["poi"]
-    highlights = [chosen_poi]
     polyline = chosen["route"].get("polyline")
+    chosen_distance = point_to_route_meters(chosen_poi.get("location"), polyline)
+    if chosen_distance is None:
+        return []
+
+    # `distance` is the search-sample distance, not distance to the selected route.
+    # Write the measured value for the selected waypoint too.
+    chosen_poi = {**chosen_poi, "off_route_meters": chosen_distance}
+    highlights = [chosen_poi]
     seen = {_poi_identity(chosen_poi)}
 
     nearby: list[tuple[float, dict]] = []
@@ -189,7 +218,7 @@ def _collect_highlights(chosen: dict, pois: list) -> list[dict]:
         if distance is None or distance > NEARBY_POI_METERS:
             continue
         seen.add(identity)
-        nearby.append((distance, poi))
+        nearby.append((distance, {**poi, "off_route_meters": distance}))
 
     # 先按评分挑「值得说」的，同分再按贴近路线的程度破平。
     nearby.sort(key=lambda item: (-_normalize_rating(item[1].get("rating", 0)), item[0]))
@@ -288,6 +317,9 @@ def _evaluate_candidate(
         return None
 
     detour_minutes = round(detour_seconds / 60)
+    # R4：这个 POI 离基准路线多远。这是模式差异的输入 —— 兜底数据下绕行分钟数
+    # 常常是 0（7 公里的路上绕 100 米不到一分钟），只靠 detour_minutes 分不开三个模式。
+    off_route_meters = point_to_route_meters(poi_coord, baseline.get("polyline"))
     rating = _normalize_rating(poi.get("rating", 0))
     # 标签这一维现在真的参与打分：affinity 来自用户此前的反馈（PreferenceManager）。
     # 没有任何反馈时是 0.0（中性），行为与改造前接近；点过「一般」的类目会被压低，
@@ -303,6 +335,9 @@ def _evaluate_candidate(
         "route": candidate_route,
         "detour_minutes": detour_minutes,
         "score": score,
+        # 只用于 _choose_candidate 排序，不出接口。None 表示算不出（折线退化），
+        # 按 0 处理会把一个位置未知的店说成「就在路边」。
+        "off_route_meters": off_route_meters,
     }
 
 
@@ -347,19 +382,32 @@ def _evaluate_candidates(
 
 
 def _choose_candidate(candidates: list[dict], mode: str) -> dict | None:
-    """在预算内挑分最高的候选。三个模式一视同仁。
+    """在预算内挑最值得的候选，模式决定「愿意为它偏离主路多远」。
 
     `+5` 过去取 `min(detour_minutes)` —— 但预算在 _evaluate_candidate 里已经
     卡过一次了，进到这里的候选**都**满足 +5 的 5 分钟上限，再取最小绕行等于
     让 3.5 分零绕行的店赢过 4.9 分绕 1 分钟的店：默认模式下评分体系完全不
     参与选择。既然是「顺手一绕」而不是「尽量别绕」，就该在预算内挑最值得的。
 
+    R4：但「三个模式一视同仁」走到了另一个极端 —— 三个模式挑出同一个 POI、
+    同一条折线，界面上三份结果只有假数字不同。现在按 DETOUR_APPETITE 给离线距离
+    记一笔排序代价：`+5` 偏向贴着路线的地方，`roam` 只看分。**返回给前端的 score
+    不受影响**（那是探索价值，7 分制），这笔代价只活在排序键里。
+
     并列时用绕行少的那个破平，保证结果稳定、不依赖候选顺序。
     """
     if not candidates:
         return None
 
-    return max(candidates, key=lambda item: (item["score"], -item["detour_minutes"]))
+    appetite = DETOUR_APPETITE.get(mode, 0.2)
+
+    def rank(item: dict) -> tuple:
+        off_route = item.get("off_route_meters")
+        # 算不出距离时按最大惩罚处理：位置说不清的店不该因为「距离未知」占到便宜。
+        penalty = appetite * (POI_SEARCH_RADIUS if off_route is None else off_route) / 100
+        return (item["score"] - penalty, -item["detour_minutes"])
+
+    return max(candidates, key=rank)
 
 
 def _normalize_rating(value) -> float:
