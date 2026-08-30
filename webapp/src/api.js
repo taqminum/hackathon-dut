@@ -88,13 +88,13 @@ async function withFallback(promiseFactory, fallbackValue) {
 /**
  * 推荐路线。core 接口，失败必须抛出，让界面显示错误态。
  */
-export async function recommendRoute({ origin, destination, mode, poiCount = 1 }, client = globalThis.fetch) {
+export async function recommendRoute({ origin, destination, mode, poiCount = 1, city = '大连市' }, client = globalThis.fetch) {
   let response
   try {
     response = await withTimeout(client, buildUrl('/route/recommend'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin, destination, mode, poi_count: poiCount }),
+      body: JSON.stringify({ origin, destination, mode, poi_count: poiCount, city }),
     })
   } catch (error) {
     // 只包传输层失败。`parse` 在这个 try 之外，后端的中文 detail 不会经过这里。

@@ -50,6 +50,7 @@ describe('geo utils', () => {
 
   it('extracts latlng from a poi payload', () => {
     expect(poiLatLng({ location: '121.6002,38.9218' })).toEqual([38.9218, 121.6002])
+    expect(poiLatLng({ location: '121.6002,38.9218', navigation_location: '121.5990,38.9200' })).toEqual([38.92, 121.599])
     expect(poiLatLng({})).toBe(null)
   })
 })

@@ -32,6 +32,7 @@ def generate_narrative(
     pois: list | None = None,
     origin: str | None = None,
     destination: str | None = None,
+    allow_demo_narrative: bool = True,
 ) -> str:
     """这条路线的一句话叙事。
 
@@ -48,7 +49,7 @@ def generate_narrative(
     model = os.getenv("LLM_MODEL")
 
     if not base_url or not model:
-        return _fallback_narrative(route_data, mode, pois, origin, destination)
+        return _fallback_narrative(route_data, mode, pois, origin, destination, allow_demo_narrative)
 
     payload = {
         "model": model,
@@ -68,7 +69,7 @@ def generate_narrative(
     except (TimeoutError, requests.RequestException, AttributeError, TypeError, KeyError, IndexError, ValueError):
         pass
 
-    return _fallback_narrative(route_data, mode, pois, origin, destination)
+    return _fallback_narrative(route_data, mode, pois, origin, destination, allow_demo_narrative)
 
 
 def _fallback_narrative(
@@ -77,10 +78,11 @@ def _fallback_narrative(
     pois: list | None,
     origin: str | None = None,
     destination: str | None = None,
+    allow_demo_narrative: bool = True,
 ) -> str:
-    # 三组演示路线的手写文案比模板更自然，优先用它。
+    # 手写文案只属于离线演示数据；真实高德路线必须以实际返回的地点生成文案。
     return (
-        _dalian_narrative(route_data, mode, origin, destination)
+        (_dalian_narrative(route_data, mode, origin, destination) if allow_demo_narrative else None)
         or _template_narrative(pois, mode)
         or DEFAULT_NARRATIVE
     )

@@ -59,6 +59,7 @@ def test_suggest_sends_keyword_and_city_to_amap(client, monkeypatch):
     query = mocker.request_history[0].qs
     assert query["keywords"] == ["星海"]
     assert query["city"] == ["大连"]
+    assert query["citylimit"] == ["true"]
 
 
 def test_suggest_filters_tips_without_coordinates(client, monkeypatch):

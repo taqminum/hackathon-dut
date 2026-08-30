@@ -71,6 +71,8 @@ export function boundsOf(latlngs) {
 
 /** POI 的 location 字段 -> [lat, lng]；用于打点 */
 export function poiLatLng(poi) {
-  const point = parseCoord(String(poi?.location ?? ''))
+  // 后端用 navigation_location（POI 的可到达入口）规划途经路线。标记也必须使用
+  // 同一个点，否则视觉上会像路线没有经过第二站。
+  const point = parseCoord(String(poi?.navigation_location ?? poi?.location ?? ''))
   return point ? [point.lat, point.lng] : null
 }

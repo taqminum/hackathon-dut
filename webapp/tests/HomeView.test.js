@@ -30,6 +30,10 @@ function mountHome(api) {
   })
 }
 
+function placeInputs(wrapper) {
+  return wrapper.findAll('[role="combobox"]')
+}
+
 describe('HomeView', () => {
   beforeEach(() => {
     globalThis.localStorage?.clear?.()
@@ -50,10 +54,10 @@ describe('HomeView', () => {
 
     expect(submit.attributes('disabled')).toBeDefined()
 
-    await wrapper.findAll('input')[0].setValue('大连理工大学')
+    await placeInputs(wrapper)[0].setValue('大连理工大学')
     expect(submit.attributes('disabled')).toBeDefined()
 
-    await wrapper.findAll('input')[1].setValue('星海广场')
+    await placeInputs(wrapper)[1].setValue('星海广场')
     expect(submit.attributes('disabled')).toBeUndefined()
   })
 
@@ -61,8 +65,8 @@ describe('HomeView', () => {
     const api = makeApi()
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('大连理工大学')
-    await wrapper.findAll('input')[1].setValue('星海广场')
+    await placeInputs(wrapper)[0].setValue('大连理工大学')
+    await placeInputs(wrapper)[1].setValue('星海广场')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -71,6 +75,7 @@ describe('HomeView', () => {
       destination: '星海广场',
       mode: '+5',
       poiCount: 1,
+      city: '大连市',
     })
 
     const emitted = wrapper.emitted('select')
@@ -86,8 +91,8 @@ describe('HomeView', () => {
     })
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('大连理工大学')
-    await wrapper.findAll('input')[1].setValue('星海广场')
+    await placeInputs(wrapper)[0].setValue('大连理工大学')
+    await placeInputs(wrapper)[1].setValue('星海广场')
     wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -108,8 +113,8 @@ describe('HomeView', () => {
     })
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('起点')
-    await wrapper.findAll('input')[1].setValue('终点')
+    await placeInputs(wrapper)[0].setValue('起点')
+    await placeInputs(wrapper)[1].setValue('终点')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -121,8 +126,8 @@ describe('HomeView', () => {
     const api = makeApi({ recommendRoute: vi.fn(async () => ({ route: null, pois: [] })) })
     const wrapper = mountHome(api)
 
-    await wrapper.findAll('input')[0].setValue('起点')
-    await wrapper.findAll('input')[1].setValue('终点')
+    await placeInputs(wrapper)[0].setValue('起点')
+    await placeInputs(wrapper)[1].setValue('终点')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -142,6 +147,7 @@ describe('HomeView', () => {
       destination: '121.5839,38.8816',
       mode: '+15',
       poiCount: 1,
+      city: '大连市',
     })
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['+15'])
   })
@@ -169,7 +175,7 @@ describe('HomeView', () => {
     await wrapper.findAll('.demo')[0].trigger('click')
     await flushPromises()
 
-    const [origin, destination] = wrapper.findAll('input').map((input) => input.element.value)
+    const [origin, destination] = placeInputs(wrapper).map((input) => input.element.value)
     const COORD = /^\d+\.\d+,\d+\.\d+$/
 
     expect(origin).not.toMatch(COORD)
@@ -191,7 +197,7 @@ describe('HomeView', () => {
       ]),
     })
     const wrapper = mountHome(api)
-    const inputs = wrapper.findAll('input')
+    const inputs = placeInputs(wrapper)
 
     await inputs[0].setValue('麦当劳')
     await new Promise((resolve) => setTimeout(resolve, 320))
@@ -205,9 +211,9 @@ describe('HomeView', () => {
     await flushPromises()
 
     // 框里是店名，不是坐标
-    expect(wrapper.findAll('input')[0].element.value).toBe('麦当劳(青泥洼桥店)')
+    expect(placeInputs(wrapper)[0].element.value).toBe('麦当劳(青泥洼桥店)')
 
-    await wrapper.findAll('input')[1].setValue('121.5839,38.8816')
+    await placeInputs(wrapper)[1].setValue('121.5839,38.8816')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
@@ -219,13 +225,23 @@ describe('HomeView', () => {
 
   it('swaps origin and destination', async () => {
     const wrapper = mountHome(makeApi())
-    const inputs = wrapper.findAll('input')
+    const inputs = placeInputs(wrapper)
 
     await inputs[0].setValue('A地')
     await inputs[1].setValue('B地')
     await wrapper.find('.home__swap').trigger('click')
 
-    expect(wrapper.findAll('input')[0].element.value).toBe('B地')
-    expect(wrapper.findAll('input')[1].element.value).toBe('A地')
+    expect(placeInputs(wrapper)[0].element.value).toBe('B地')
+    expect(placeInputs(wrapper)[1].element.value).toBe('A地')
+  })
+
+  it('sends the selected city to input suggestions and route planning', async () => {
+    const api = makeApi()
+    const wrapper = mountHome(api)
+    await wrapper.find('[aria-label="所在城市"]').setValue('北京市')
+    await placeInputs(wrapper)[0].setValue('中山')
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    await flushPromises()
+    expect(api.suggestPlaces).toHaveBeenCalledWith({ keyword: '中山', city: '北京市' })
   })
 })

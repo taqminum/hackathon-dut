@@ -132,6 +132,7 @@ describe('App', () => {
       destination: scenario.destination,
       mode: scenario.mode,
       poiCount: 1,
+      city: '大连市',
     })
 
     const title = wrapper.find('.result__title')
@@ -193,6 +194,7 @@ describe('App', () => {
       destination: scenario.destination,
       mode: scenario.mode,
       poiCount: 1,
+      city: '大连市',
     })
 
     // 没回首页
@@ -250,6 +252,7 @@ describe('App', () => {
       destination: scenario.destination,
       mode: 'roam',
       poiCount: 1,
+      city: '大连市',
     })
     // 留在结果页，标题地名没被第二次响应冲掉
     expect(wrapper.findComponent(HomeView).exists()).toBe(false)
