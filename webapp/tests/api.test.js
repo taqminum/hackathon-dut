@@ -40,6 +40,29 @@ describe('recommendRoute', () => {
     })
   })
 
+  it('includes the exclude list for replans', async () => {
+    const client = vi.fn(async () => ok({ route: {} }))
+    const api = createRecommendApi(client)
+
+    await api.recommendRoute({
+      origin: 'a',
+      destination: 'b',
+      mode: '+15',
+      poiCount: 2,
+      exclude: [{ name: '理工咖啡小铺', location: '121.6002,38.9218' }],
+    })
+
+    const [, options] = client.mock.calls[0]
+    expect(JSON.parse(options.body)).toEqual({
+      origin: 'a',
+      destination: 'b',
+      mode: '+15',
+      poi_count: 2,
+      city: '大连市',
+      exclude: [{ name: '理工咖啡小铺', location: '121.6002,38.9218' }],
+    })
+  })
+
   it('throws the backend detail message', async () => {
     const api = createRecommendApi(async () => fail(404, '未找到可行路线'))
     await expect(api.recommendRoute({ origin: 'a', destination: 'b' })).rejects.toThrow(

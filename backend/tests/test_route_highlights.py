@@ -18,6 +18,7 @@ from app.routes.api import (
     _choose_candidate,
     _collect_highlights,
     _drop_destination_neighbors,
+    _drop_excluded_pois,
     _evaluate_candidates,
     _prepare_poi_candidates,
 )
@@ -285,3 +286,51 @@ def test_drop_destination_neighbors_matches_short_alias():
     kept = _drop_destination_neighbors(pois, destination, destination_name="星海")
 
     assert kept == []
+
+
+def test_drop_excluded_pois_removes_previous_waypoint_by_coordinate():
+    """重新规划时，上一轮选过的地点必须从候选池里消失。"""
+    pois = [
+        {"name": "瑞幸咖啡(大连软件园22号楼店)", "location": "121.539956,38.887705"},
+        {"name": "跨海大桥观景点", "location": "121.604156,38.871526"},
+    ]
+    excluded = [{"name": "瑞幸咖啡(大连软件园22号楼店)", "location": "121.539956,38.887705"}]
+
+    kept = _drop_excluded_pois(pois, excluded)
+
+    assert [poi["name"] for poi in kept] == ["跨海大桥观景点"]
+
+
+def test_drop_excluded_pois_matches_nearby_same_name_poi():
+    """同名入口/换过名称的记录在近距离内也要剔除，不能只认坐标完全相同的记录。"""
+    pois = [
+        {"name": "跨海大桥观景点入口", "location": "121.605000,38.871500"},
+        {"name": "途中公园", "location": "121.550000,38.885000"},
+    ]
+    excluded = [{"name": "跨海大桥观景点", "navigation_location": "121.604156,38.871526"}]
+
+    kept = _drop_excluded_pois(pois, excluded)
+
+    assert [poi["name"] for poi in kept] == ["途中公园"]
+
+
+def test_drop_excluded_pois_keeps_unrelated_pois_and_far_away_same_names():
+    """没有选过的地点、以及远处另一座同名地点都不该被误删。"""
+    pois = [
+        {"name": "途中公园", "location": "121.560000,38.885000"},
+        {"name": "星海广场", "location": "104.000000,30.000000"},
+    ]
+    excluded = [{"name": "跨海大桥观景点", "location": "121.604156,38.871526"}]
+
+    kept = _drop_excluded_pois(pois, excluded)
+
+    assert [poi["name"] for poi in kept] == ["途中公园", "星海广场"]
+
+
+def test_drop_excluded_pois_accepts_empty_and_garbage_input():
+    """没有 exclude 或格式不对时，候选池原样放行。"""
+    pois = [{"name": "途中公园", "location": "121.560000,38.885000"}]
+
+    assert _drop_excluded_pois(pois, None) == pois
+    assert _drop_excluded_pois(pois, []) == pois
+    assert _drop_excluded_pois(pois, [{"name": ""}]) == pois

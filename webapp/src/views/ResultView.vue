@@ -36,12 +36,20 @@ const emit = defineEmits(['back', 'replan'])
 
 const api = useApi()
 
+const POI_COUNTS = [
+  { value: 1, label: '1 站', caption: '重点停一站' },
+  { value: 2, label: '2 站', caption: '一条线串两站' },
+  { value: 3, label: '3 站', caption: '完整探索路线' },
+]
+
 const activePoiIndex = ref(-1)
 const saveState = ref('')
 const feedbackState = ref('')
 // T8-4：反馈的文字确认。选中态只说「你点了哪个」，这行说「后端真的学到了什么」
 const feedbackNote = ref('')
 const stepsExpanded = ref(false)
+// 重新规划时用户可以再选一次途经几个地点；默认沿用这一轮请求里的数量。
+const poiCount = ref(1)
 
 // 收藏、反馈、POI 高亮和步骤展开都只属于当前这一次推荐。结果页原地切换
 // 探索模式时组件不会重挂，若不主动清空，上一条路线的「已收藏 / 还不错」
@@ -60,7 +68,9 @@ watch(
     feedbackState.value = ''
     feedbackNote.value = ''
     stepsExpanded.value = false
+    poiCount.value = Number(props.result?.request?.poiCount) || 1
   },
+  { immediate: true },
 )
 
 const route = computed(() => props.result?.route ?? null)
@@ -133,6 +143,13 @@ const pois = computed(() => (Array.isArray(props.result?.pois) ? props.result.po
 const steps = computed(() => (Array.isArray(route.value?.steps) ? route.value.steps : []))
 
 const modeInfo = computed(() => findMode(request.value?.mode))
+
+function replan(modeOverride) {
+  emit('replan', {
+    mode: typeof modeOverride === 'string' && modeOverride ? modeOverride : request.value?.mode,
+    poiCount: poiCount.value,
+  })
+}
 
 /** S3：结果页上的模式切换。评委在同一条路线上连点三个模式，就能看出
  * 「探索程度」这个旋钮到底改变了什么 —— 这是 S1 那些几何差异最直观的展示方式。
@@ -431,6 +448,20 @@ const saveLabel = computed(() => {
                比这里再摆一个更有用；两处都摆就是同一个动作出现两遍。
                S3：旁边加三个模式，点一下就以该模式原地重算。 -->
           <div class="result__head-actions">
+            <fieldset class="result__stops" :disabled="replanning">
+              <legend class="bh-label">绕几站</legend>
+              <div class="result__stop-options">
+                <label
+                  v-for="option in POI_COUNTS"
+                  :key="option.value"
+                  :class="['result__stop-option', { 'result__stop-option--active': poiCount === option.value }]"
+                  :title="option.caption"
+                >
+                  <input v-model="poiCount" type="radio" name="replan-poi-count" :value="option.value" :disabled="replanning" />
+                  <span class="bh-numeral">{{ option.label }}</span>
+                </label>
+              </div>
+            </fieldset>
             <div
               class="result__modes"
               role="radiogroup"
@@ -449,7 +480,7 @@ const saveLabel = computed(() => {
                   `result__mode-btn--${item.color}`,
                   { 'result__mode-btn--active': modeInfo.value === item.value },
                 ]"
-                @click="emit('replan', item.value)"
+                @click="replan(item.value)"
               >
                 <span class="bh-numeral">{{ item.label }}</span>
               </button>
@@ -458,7 +489,7 @@ const saveLabel = computed(() => {
               type="button"
               class="bh-btn bh-btn--primary result__replan"
               :disabled="replanning"
-              @click="emit('replan')"
+              @click="replan()"
             >
               {{ replanning ? '重新规划中…' : '重新规划' }}
             </button>
@@ -682,6 +713,43 @@ const saveLabel = computed(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--bh-3);
+}
+
+.result__stops {
+  display: grid;
+  gap: var(--bh-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.result__stop-options {
+  display: flex;
+  gap: var(--bh-1);
+}
+
+.result__stop-option {
+  display: grid;
+  place-items: center;
+  min-width: 2.75rem;
+  padding: var(--bh-1) var(--bh-2);
+  border: var(--bh-line) solid var(--bh-ink);
+  background: var(--bh-white);
+  cursor: pointer;
+  font-size: var(--bh-text-sm);
+}
+
+.result__stop-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.result__stop-option--active {
+  transform: translate(-1px, -1px);
+  background: var(--bh-yellow);
+  box-shadow: var(--bh-shadow-sm);
 }
 
 .result__modes {

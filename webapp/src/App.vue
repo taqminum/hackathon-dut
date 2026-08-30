@@ -19,6 +19,9 @@ const online = ref(null)
 // 结果页只负责显示，不再自己知道怎么重发。
 const replanning = ref(false)
 const replanError = ref('')
+// 同一段行程里「重新规划」需要避开的 POI 累积清单。以队友/用户视角：
+// 每次重算都要比上一次更陌生一点，否则第二次点按钮换来的还是同一家店。
+const excludedPois = ref([])
 
 /** T2：健康灯要反映真实状态，不能是开场点亮一次就永远亮着。
  * 演示中途后端被 Ctrl-C 掉是常事，那时灯还绿着，比没有灯更误导。 */
@@ -27,6 +30,8 @@ let healthTimer = null
 
 function onRouteSelected(route) {
   if (!route) return
+  // 新的起点/终点就是一趟新行程，上一轮的避让清单不能带过来
+  excludedPois.value = []
   selectedRoute.value = route
   currentView.value = 'result'
   try {
@@ -56,13 +61,20 @@ function onBack() {
  * 只把它传给接口的话，用户切到 roam 之后再点一次「重新规划」会退回旧模式，
  * 而屏幕上的模式标签也还是旧的。地名照旧从 `request` 继承，不被新响应冲掉。
  */
-async function onReplan(nextMode) {
+async function onReplan(payload) {
   const request = selectedRoute.value?.request
   if (!request || replanning.value) return
 
   // 只接受合法模式串：模板里 @click 可能把事件对象传进来（和 HomeView.handleSubmit
   // 里同一个坑），那时候按「用当前模式重算」处理。
+  const nextMode = typeof payload === 'string' ? payload : payload?.mode
+  const nextPoiCount =
+    Number(typeof payload === 'object' && payload !== null ? payload.poiCount : NaN) ||
+    Number(request.poiCount) ||
+    1
   const mode = typeof nextMode === 'string' && nextMode ? nextMode : request.mode
+  const oldPois = Array.isArray(selectedRoute.value?.pois) ? selectedRoute.value.pois : []
+  const exclude = mergeExcludedPois([...excludedPois.value, ...oldPois])
 
   replanning.value = true
   replanError.value = ''
@@ -71,14 +83,19 @@ async function onReplan(nextMode) {
       origin: request.origin,
       destination: request.destination,
       mode,
-      poiCount: request.poiCount || 1,
+      poiCount: nextPoiCount,
       city: request.city || '大连市',
+      exclude,
     })
     if (!result?.route) {
       replanError.value = '这次没算出可用路线，起终点没变，可以再试一次'
       return
     }
-    selectedRoute.value = { ...result, request: { ...request, mode } }
+    excludedPois.value = mergeExcludedPois([
+      ...exclude,
+      ...(Array.isArray(result.pois) ? result.pois : []),
+    ])
+    selectedRoute.value = { ...result, request: { ...request, mode, poiCount: nextPoiCount } }
   } catch (err) {
     // 中文兜底。err.message 在断网时是 `Failed to fetch`，上一轮已经修过一次
     // 裸英文透传，这里不能再退回去 —— useApi 会把已知错误翻好，剩下的兜底。
@@ -86,6 +103,25 @@ async function onReplan(nextMode) {
   } finally {
     replanning.value = false
   }
+}
+
+function mergeExcludedPois(items) {
+  const seen = new Set()
+  const merged = []
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const name = String(item.name || '').trim()
+    const location = String(item.navigation_location || item.location || '').trim()
+    const key = `${name}|${location}`
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    merged.push({
+      name,
+      location: location || '',
+      navigation_location: String(item.navigation_location || '').trim(),
+    })
+  }
+  return merged
 }
 
 async function refreshHealth() {

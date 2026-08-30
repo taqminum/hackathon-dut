@@ -380,6 +380,31 @@ describe('ResultView', () => {
     expect(wrapper.findAll('.tile')).toHaveLength(4)
   })
 
+  it('re-plan carries the waypoint count picked on the result page', async () => {
+    const wrapper = mountResult(RESULT)
+    await wrapper.findAll('.result__stop-option input')[2].setValue(true)
+    await wrapper.find('.result__replan').trigger('click')
+
+    expect(wrapper.emitted('replan')[0][0]).toEqual({ mode: '+15', poiCount: 3 })
+  })
+
+  it('mode buttons re-plan with the mode and the current waypoint count', async () => {
+    const wrapper = mountResult(RESULT)
+    await wrapper.findAll('.result__mode-btn')[2].trigger('click')
+
+    expect(wrapper.emitted('replan')[0][0]).toEqual({ mode: 'roam', poiCount: 1 })
+  })
+
+  it('defaults the replan stop count to the last request', () => {
+    const wrapper = mountResult({
+      ...RESULT,
+      request: { ...RESULT.request, poiCount: 2 },
+    })
+
+    expect(wrapper.findAll('.result__stop-option--active')).toHaveLength(1)
+    expect(wrapper.find('.result__stop-option--active').text()).toContain('2')
+  })
+
   // R7：结果页头里没有第二个「返回首页」。「返回首页」在吸顶页头（SiteHeader）里，
   // 它的 back 走的是 App 层，链路断言在 tests/App.test.js。这里钉住的是
   // 结果页自己不再摆第二个「返回首页」—— 摆了就是同一个动作出现两遍。
@@ -506,7 +531,7 @@ describe('ResultView', () => {
 
     // 点 roam：事件必须带上那个模式，否则 App 层只能按旧模式重算
     await buttons[2].trigger('click')
-    expect(wrapper.emitted('replan')).toEqual([['roam']])
+    expect(wrapper.emitted('replan')).toEqual([[{ mode: 'roam', poiCount: 1 }]])
     // 不回首页
     expect(wrapper.emitted('back')).toBeUndefined()
   })

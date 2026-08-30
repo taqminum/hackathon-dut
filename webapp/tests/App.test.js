@@ -195,6 +195,7 @@ describe('App', () => {
       mode: scenario.mode,
       poiCount: 1,
       city: '大连市',
+      exclude: [],
     })
 
     // 没回首页
@@ -253,6 +254,7 @@ describe('App', () => {
       mode: 'roam',
       poiCount: 1,
       city: '大连市',
+      exclude: [],
     })
     // 留在结果页，标题地名没被第二次响应冲掉
     expect(wrapper.findComponent(HomeView).exists()).toBe(false)
@@ -265,6 +267,100 @@ describe('App', () => {
     await flushPromises()
 
     expect(recommendRoute.mock.calls[2][0].mode).toBe('roam')
+  })
+
+  // R11：重新规划不只是重发一次同样的请求。上一轮挑过的地点要带进 exclude，
+  // 让后端从候选池里剔除；结果页还可以再选途经几个地方，选中的数量要写回
+  // request，下一次重算沿用，不能只剩这一轮生效。
+  it('re-plan excludes previous waypoints and keeps the picked stop count', async () => {
+    const scenario = DEMO_SCENARIOS[0]
+    const initialPoi = {
+      name: '理工咖啡小铺',
+      type: '餐饮服务;咖啡厅',
+      location: '121.6002,38.9218',
+      navigation_location: '121.6002,38.9218',
+    }
+    const nextPoi = {
+      name: '银沙滩公园',
+      type: '风景名胜;公园广场;公园',
+      location: '121.607835,38.868495',
+      navigation_location: '121.607835,38.868495',
+    }
+    const route = { polyline: '121.5197,38.8856;121.5839,38.8816', distance: 2100, duration: 1260 }
+    const recommendRoute = vi
+      .fn()
+      .mockResolvedValueOnce({
+        baseline_minutes: 21,
+        detour_minutes: 5,
+        score: 6.4,
+        pois: [initialPoi],
+        narrative: '第一版。',
+        route,
+      })
+      .mockResolvedValueOnce({
+        baseline_minutes: 33,
+        detour_minutes: 9,
+        score: 7.1,
+        pois: [nextPoi],
+        narrative: '第二版。',
+        route: { ...route, distance: 3400 },
+      })
+      .mockResolvedValueOnce({
+        baseline_minutes: 40,
+        detour_minutes: 12,
+        score: 6.8,
+        pois: [nextPoi],
+        narrative: '第三版。',
+        route: { ...route, distance: 3600 },
+      })
+
+    const api = {
+      recommendRoute,
+      suggestPlaces: vi.fn(async () => []),
+      checkHealth: vi.fn(async () => ({ online: true })),
+      saveTrip: vi.fn(async () => ({ ok: true })),
+      sendFeedback: vi.fn(async () => ({ ok: true })),
+      listTrips: vi.fn(async () => []),
+    }
+
+    const wrapper = mount(App, { global: { provide: { [API_KEY]: api } } })
+    await wrapper.findAll('.demo')[0].trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    // 结果页先把途经数量改成 2，再点「重新规划」
+    await wrapper.findAll('.result__stop-option input')[1].setValue(true)
+    await wrapper.find('.result__replan').trigger('click')
+    await flushPromises()
+    await nextTick()
+
+    expect(recommendRoute.mock.calls[1][0]).toEqual({
+      origin: scenario.origin,
+      destination: scenario.destination,
+      mode: scenario.mode,
+      poiCount: 2,
+      city: '大连市',
+      exclude: [
+        {
+          name: initialPoi.name,
+          location: initialPoi.location,
+          navigation_location: initialPoi.navigation_location,
+        },
+      ],
+    })
+    expect(wrapper.find('.result__mode').text()).toContain('途经 1 站')
+
+    // 第二次再规划：上一轮的两个地点都不能再出现，数量保持在 2
+    await wrapper.find('.result__replan').trigger('click')
+    await flushPromises()
+
+    expect(recommendRoute.mock.calls[2][0].poiCount).toBe(2)
+    expect(recommendRoute.mock.calls[2][0].exclude).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: initialPoi.name }),
+        expect.objectContaining({ name: nextPoi.name }),
+      ]),
+    )
   })
 
   it('reports a failed re-plan in Chinese and keeps the previous result', async () => {

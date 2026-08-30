@@ -134,6 +134,44 @@ def test_offline_demo_nine_combinations(client, monkeypatch, pair, mode):
     assert body["detour_minutes"] <= MAX_DETOUR_MINUTES[mode], "兜底数据不能超出模式预算"
 
 
+def test_replan_exclude_skips_previous_waypoint(client):
+    """重新规划带上 exclude 后，上一轮挑过的地点必须从返回的亮点里消失。"""
+    response = client.post(
+        "/api/route/recommend",
+        json={
+            "origin": landmark("xianlu"),
+            "destination": landmark("fujiazhuang"),
+            "mode": "+5",
+            "exclude": [
+                {
+                    "name": "The House Cafe&Bar",
+                    "location": "121.588943,38.893912",
+                    "navigation_location": "121.588943,38.893912",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    pois = response.json()["pois"]
+    assert pois, "排除一个地点后兜底表还必须给得出其他亮点"
+    assert all("The House Cafe&Bar" not in poi["name"] for poi in pois)
+
+
+def test_replan_exclude_rejects_non_list_values(client):
+    response = client.post(
+        "/api/route/recommend",
+        json={
+            "origin": landmark("xianlu"),
+            "destination": landmark("fujiazhuang"),
+            "mode": "+5",
+            "exclude": "The House Cafe&Bar",
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_frontend_constants_match_backend_landmarks():
     """`webapp/src/constants.js` 的演示坐标必须和 `dalian.py` 的 `LANDMARKS` 一致。
 

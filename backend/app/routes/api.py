@@ -105,6 +105,11 @@ ENDPOINT_EXCLUDE_METERS = 300
 # 对名称与目的地一致的 POI 放宽容忍范围，避免把「目的地本身/同名交通站」当成
 # 沿途亮点；远处另一座同名地点不受影响。
 DEST_NAME_MATCH_METERS = 1000
+# 重新规划时避开上一轮已经挑过的地点。坐标贴脸（300 米内）直接剔除；
+# 同城重名点（同名入口、换过名称的记录等）在 1000 米内也剔除，
+# 避免换一条路线还是同一家店。远处另一座同名地点不受影响。
+EXCLUDE_POI_METERS = 300
+EXCLUDE_NAME_MATCH_METERS = 1000
 
 INPUTTIPS_URL = "https://restapi.amap.com/v3/assistant/inputtips"
 # 收藏是进程内存储：演示够用，重启即失。要持久化再接数据库，
@@ -132,6 +137,7 @@ def recommend_route(
     mode: str = Body("+5", embed=True),
     poi_count: int = Body(1, embed=True),
     city: str | None = Body(None, embed=True),
+    exclude: list | None = Body(None, embed=True),
 ):
     started_at = time.monotonic()
 
@@ -210,6 +216,7 @@ def recommend_route(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     pois = _drop_destination_neighbors(pois, resolved_destination, destination_name=destination)
+    pois = _drop_excluded_pois(pois, exclude)
 
     if not pois:
         raise HTTPException(status_code=404, detail="这条路线沿线没有找到可核实的值得绕行地点")
@@ -428,6 +435,59 @@ def _drop_destination_neighbors(pois: list, destination: str, destination_name: 
         if distance <= ENDPOINT_EXCLUDE_METERS or (same_name and distance <= DEST_NAME_MATCH_METERS):
             continue
         kept.append(poi)
+    return kept
+
+
+def _drop_excluded_pois(pois: list, excluded) -> list:
+    """重新规划时剔除用户上一轮已经选过的地点。
+
+    前端把上一轮返回的 `pois` 原样带回 `exclude`。坐标贴脸的地方直接剔除；
+    同名地点（例如换了入口名称的记录）在上千米内也剔除，防止换条路线又路过
+    同一家店。远处另一座同名地点不受影响。
+    """
+    if not isinstance(excluded, list) or not excluded:
+        return list(pois)
+
+    blocks = []
+    for item in excluded:
+        if not isinstance(item, dict):
+            continue
+        name = _normalize_name(item.get("name"))
+        coord = _parse_coord(item.get("navigation_location") or item.get("location"))
+        if name or coord:
+            blocks.append({"name": name, "coord": coord})
+    if not blocks:
+        return list(pois)
+
+    kept: list = []
+    for poi in pois:
+        if not isinstance(poi, dict):
+            kept.append(poi)
+            continue
+        poi_coord = _parse_coord(poi.get("navigation_location") or poi.get("location"))
+        poi_name = _normalize_name(poi.get("name"))
+        dropped = False
+        for block in blocks:
+            if (
+                block["coord"]
+                and poi_coord
+                and _haversine_meters(poi_coord, block["coord"]) <= EXCLUDE_POI_METERS
+            ):
+                dropped = True
+                break
+            same_name = bool(block["name"]) and bool(poi_name) and (
+                block["name"] in poi_name or poi_name in block["name"]
+            )
+            if not same_name:
+                continue
+            if not block["coord"] or not poi_coord:
+                dropped = True
+            elif _haversine_meters(poi_coord, block["coord"]) <= EXCLUDE_NAME_MATCH_METERS:
+                dropped = True
+            if dropped:
+                break
+        if not dropped:
+            kept.append(poi)
     return kept
 
 
