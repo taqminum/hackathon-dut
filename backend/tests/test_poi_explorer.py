@@ -284,6 +284,27 @@ def test_explore_pois_along_route_survives_one_failing_sample():
     assert [poi["name"] for poi in pois] == ["活下来的店"]
 
 
+def test_explore_pois_along_route_retries_on_amap_rate_limit():
+    """10021 是高德 QPS 限流，HTTP 仍是 200；必须退避重试而不是直接报错。"""
+    polyline = ";".join(f"{120.0 + step * 0.05},30.0" for step in range(9))
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.side_effect = [
+            {"status": "0", "infocode": "10021", "info": "CUQPS_HAS_EXCEEDED_THE_LIMIT", "pois": []},
+            {"pois": [_poi("限流后找到的店", "4.5")]},
+            {"pois": []},
+            {"pois": []},
+        ]
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route(
+                "120.0,30.0", "120.4,30.0", ["餐饮"], radius=400, polyline=polyline
+            )
+
+    assert [poi["name"] for poi in pois] == ["限流后找到的店"]
+    assert mock_get.call_count == 4
+
+
 def test_explore_pois_along_route_ignores_malformed_polyline():
     with patch("app.services.poi_explorer.requests.get") as mock_get:
         mock_get.return_value.status_code = 200

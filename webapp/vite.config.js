@@ -11,9 +11,17 @@ const proxy = {
 
 export default defineConfig({
   plugins: [vue()],
-  server: { proxy },
+  server: {
+    port: 5173,
+    strictPort: true,
+    proxy,
+  },
   // 生产由后端同源托管 dist，preview 用代理模拟这一环境
-  preview: { proxy },
+  preview: {
+    port: 4173,
+    strictPort: true,
+    proxy,
+  },
   test: {
     environment: 'jsdom',
     globals: true,

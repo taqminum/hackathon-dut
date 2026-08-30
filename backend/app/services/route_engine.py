@@ -15,8 +15,8 @@ WALKING_URL = "https://restapi.amap.com/v3/direction/walking"
 # CUQPS_HAS_EXCEEDED_THE_LIMIT（HTTP 仍是 200，很容易被当成成功）。
 # 实测 3 线程并发 9 次调用有 6 次被拒，所以必须限流 + 重试。
 AMAP_RATE_LIMIT_CODES = {"10021", "10022", "10019", "10020", "10001"}
-AMAP_MIN_INTERVAL_SECONDS = 0.2   # 两次高德调用之间的最小间隔
-AMAP_MAX_ATTEMPTS = 3
+AMAP_MIN_INTERVAL_SECONDS = float(os.getenv("AMAP_MIN_INTERVAL_SECONDS", "0.35"))
+AMAP_MAX_ATTEMPTS = int(os.getenv("AMAP_MAX_ATTEMPTS", "3"))
 
 # 路线来源。绝不能把 amap 的真实路线和 fallback 的直线几何放在一起比较绕行，
 # 否则会拿真实基准去减合成候选，算出来的「多花 N 分钟」是假的。
