@@ -15,6 +15,7 @@ from app.services.detour_calculator import calculate_detour
 from app.services.geocoder import ensure_location_in_city, normalize_coordinate, resolve_location
 from app.services.narrative import DEFAULT_NARRATIVE, generate_narrative
 from app.services.poi_explorer import explore_pois_along_route, poi_fit_score
+from app.services.poi_judge import judge_pois, split_pois_by_verdict
 from app.services.route_engine import (
     SOURCE_AMAP,
     SOURCE_FALLBACK,
@@ -56,6 +57,9 @@ DETOUR_APPETITE = {"+5": 0.6, "+15": 0.2, "roam": 0.0}
 # 每个候选要两次高德步行调用（步行接口不支持 waypoint，只能两段拼接）。
 # 截断到 3 个是为了控制配额：一次请求约 7 次调用。
 MAX_CANDIDATES = 6
+# AI 语义把关只看质量最高的前 N 个候选，避免把几十条 POI 一次塞给 LLM。
+# 取 MAX_CANDIDATES 的两倍，既覆盖候选池，也留出被 AI 剔除后的替补空间。
+AI_JUDGE_POI_LIMIT = 12
 # 高德对同一个 Key 有并发上限（infocode 10021），route_engine 里已按
 # AMAP_MIN_INTERVAL_SECONDS 限流，这里再开大线程池只会互相排队并触发限流重试。
 MAX_WORKERS = 2
@@ -203,6 +207,21 @@ def recommend_route(
         pois = [poi for poi in pois if _discovery_kind(poi)]
         if not pois:
             raise HTTPException(status_code=404, detail="这条路线沿线没有找到文化或风景类绕行地点")
+
+        # AI 语义把关：类别规则拦不住的小馆子/连锁门店，让 LLM 判一次是否值得绕路。
+        # 只取质量最高的前 N 个给 LLM；失败时 judge_pois 返回 None，rejected 为空，
+        # 候选原样保留 —— AI 把关不能改变原来的推荐行为。
+        judge_pool = sorted(
+            pois,
+            key=_preliminary_poi_quality,
+            reverse=True,
+        )[:AI_JUDGE_POI_LIMIT]
+        _judged, rejected = split_pois_by_verdict(judge_pool, judge_pois(judge_pool))
+        rejected_ids = {id(poi) for poi in rejected}
+        if rejected_ids:
+            pois = [poi for poi in pois if id(poi) not in rejected_ids]
+        if not pois:
+            raise HTTPException(status_code=404, detail="这条路线沿线没有找到值得绕行的地点")
 
     # 单点候选需要逐个走真实路网，才能比较绕行时间；多点如果也先逐个规划，
     # 6 个候选会额外消耗 12 次步行请求，等真正组合路线时总预算已经耗尽。

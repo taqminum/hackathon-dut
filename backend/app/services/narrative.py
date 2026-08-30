@@ -60,7 +60,7 @@ def generate_narrative(
     try:
         response = requests.post(base_url, json=payload, timeout=10)
         response.raise_for_status()
-        content = _extract_content(response.json())
+        content = extract_content(response.json())
         if content:
             return content
     # 响应是合法 JSON 但结构不对时，取字段会抛 AttributeError / TypeError /
@@ -94,7 +94,7 @@ def _build_prompt(route_data: dict, mode: str, pois: list | None) -> str:
     return f"请根据路线数据生成一段探索叙事：{route_data}，模式：{mode}{highlight}"
 
 
-def _extract_content(data) -> str | None:
+def extract_content(data) -> str | None:
     """从 LLM 响应里取正文。兼容 OpenAI 风格的 choices 和 Ollama 风格的 response。
 
     每一层都要判类型：实测 `choices` 可能是字符串、元素可能是 null，
