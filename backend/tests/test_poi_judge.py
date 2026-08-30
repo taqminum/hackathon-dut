@@ -93,7 +93,7 @@ def test_judge_pois_parses_llm_verdicts():
     mock_post.assert_called_once()
     _, kwargs = mock_post.call_args
     assert kwargs["json"]["model"] == "demo"
-    assert "老王海鲜烧烤" in kwargs["json"]["prompt"]
+    assert "老王海鲜烧烤" in kwargs["json"]["messages"][0]["content"]
 
 
 def test_judge_pois_sends_bearer_token_when_key_configured():

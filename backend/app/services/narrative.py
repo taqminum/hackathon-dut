@@ -54,7 +54,7 @@ def generate_narrative(
 
     payload = {
         "model": model,
-        "prompt": _build_prompt(route_data, mode, pois),
+        "messages": [{"role": "user", "content": _build_prompt(route_data, mode, pois)}],
         "stream": False,
     }
 

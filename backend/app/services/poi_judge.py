@@ -60,7 +60,11 @@ def judge_pois(pois: list[dict]) -> dict[int, dict] | None:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         response = requests.post(
             base_url,
-            json={"model": model, "prompt": _build_prompt(pois), "stream": False},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": _build_prompt(pois)}],
+                "stream": False,
+            },
             headers=headers,
             timeout=POI_JUDGE_TIMEOUT_SECONDS,
         )
