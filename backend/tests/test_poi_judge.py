@@ -96,6 +96,26 @@ def test_judge_pois_parses_llm_verdicts():
     assert "老王海鲜烧烤" in kwargs["json"]["prompt"]
 
 
+def test_judge_pois_sends_bearer_token_when_key_configured():
+    with patch("app.services.poi_judge.requests.post") as mock_post:
+        mock_post.return_value.raise_for_status.return_value = None
+        mock_post.return_value.json.return_value = {
+            "choices": [{"message": {"content": '[{"index": 0, "worth": true, "reason": "ok"}]'}}]
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_API_BASE": "http://localhost",
+                "LLM_API_KEY": "sk-test-123",
+                "LLM_MODEL": "demo",
+            },
+        ):
+            judge_pois([_poi("星海公园")])
+
+    _, kwargs = mock_post.call_args
+    assert kwargs["headers"] == {"Authorization": "Bearer sk-test-123"}
+
+
 def test_judge_pois_accepts_code_fenced_json():
     content = '```json\n[{"index": 0, "worth": true, "reason": "ok"}]\n```'
     with patch("app.services.poi_judge.requests.post") as mock_post:

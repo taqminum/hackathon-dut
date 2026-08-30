@@ -23,6 +23,26 @@ def test_generate_narrative_success():
             mock_post.assert_called_once()
 
 
+def test_generate_narrative_sends_bearer_token_when_key_configured():
+    with patch("app.services.narrative.requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "推荐理由"}}]
+        }
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_API_BASE": "http://localhost",
+                "LLM_API_KEY": "sk-test-123",
+                "LLM_MODEL": "demo",
+            },
+        ):
+            generate_narrative({"routes": []}, "+5")
+
+    _, kwargs = mock_post.call_args
+    assert kwargs["headers"] == {"Authorization": "Bearer sk-test-123"}
+
+
 def test_generate_narrative_timeout_fallback():
     with patch("app.services.narrative.requests.post", side_effect=TimeoutError):
         text = generate_narrative({"routes": []}, "+5")

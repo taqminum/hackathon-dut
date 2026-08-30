@@ -41,6 +41,7 @@ def judge_pois(pois: list[dict]) -> dict[int, dict] | None:
 
     base_url = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL")
+    api_key = os.getenv("LLM_API_KEY")
     if not base_url or not model:
         return None
 
@@ -56,9 +57,11 @@ def judge_pois(pois: list[dict]) -> dict[int, dict] | None:
             return cached[1]
 
     try:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         response = requests.post(
             base_url,
             json={"model": model, "prompt": _build_prompt(pois), "stream": False},
+            headers=headers,
             timeout=POI_JUDGE_TIMEOUT_SECONDS,
         )
         response.raise_for_status()

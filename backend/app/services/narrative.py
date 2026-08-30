@@ -47,6 +47,7 @@ def generate_narrative(
     """
     base_url = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL")
+    api_key = os.getenv("LLM_API_KEY")
 
     if not base_url or not model:
         return _fallback_narrative(route_data, mode, pois, origin, destination, allow_demo_narrative)
@@ -58,7 +59,8 @@ def generate_narrative(
     }
 
     try:
-        response = requests.post(base_url, json=payload, timeout=10)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        response = requests.post(base_url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         content = extract_content(response.json())
         if content:
