@@ -15,7 +15,10 @@ WALKING_URL = "https://restapi.amap.com/v3/direction/walking"
 # CUQPS_HAS_EXCEEDED_THE_LIMIT（HTTP 仍是 200，很容易被当成成功）。
 # 实测 3 线程并发 9 次调用有 6 次被拒，所以必须限流 + 重试。
 AMAP_RATE_LIMIT_CODES = {"10021", "10022", "10019", "10020", "10001"}
-AMAP_MIN_INTERVAL_SECONDS = float(os.getenv("AMAP_MIN_INTERVAL_SECONDS", "0.35"))
+# 低配 Web 服务 Key 的常见 QPS 低于 5；多地点规划会连续查询 POI 和步行分段，
+# 默认用约 1.7 QPS 的保守节奏避免 10021（CUQPS_HAS_EXCEEDED_THE_LIMIT），
+# 同时保留环境变量覆盖，方便按 Key 档位调高或调低。
+AMAP_MIN_INTERVAL_SECONDS = float(os.getenv("AMAP_MIN_INTERVAL_SECONDS", "0.6"))
 AMAP_MAX_ATTEMPTS = int(os.getenv("AMAP_MAX_ATTEMPTS", "3"))
 
 # 路线来源。绝不能把 amap 的真实路线和 fallback 的直线几何放在一起比较绕行，

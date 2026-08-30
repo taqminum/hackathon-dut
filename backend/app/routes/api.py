@@ -807,11 +807,13 @@ def _normalize_tip(tip) -> dict | None:
         return None
 
     location = tip.get("location")
+    # 联想列表只返回可直接用于规划的实体地点。行政区等没有坐标的提示虽然有名称，
+    # 但不能可靠地成为“从这里出发”的位置，保留它会让前端看起来可选、提交后才失败。
     if not isinstance(location, str) or "," not in location:
-        # 没有坐标的条目留着也能用：前端会把 name 当文本再走一次地理编码。
-        location = ""
-    else:
-        location = gcj02_str_to_wgs84_str(location) or ""
+        return None
+    location = gcj02_str_to_wgs84_str(location) or ""
+    if not location:
+        return None
 
     district = tip.get("district")
     address = tip.get("address")
