@@ -16,7 +16,7 @@ function normalize(value) {
 function entryKey(entry) {
   const origin = normalize(entry?.originLabel || entry?.origin)
   const destination = normalize(entry?.destinationLabel || entry?.destination)
-  return `${origin}\u0000${destination}\u0000${normalize(entry?.mode)}`
+  return `${normalize(entry?.city || '大连市')}\u0000${origin}\u0000${destination}\u0000${normalize(entry?.mode)}`
 }
 
 function dedupe(items) {

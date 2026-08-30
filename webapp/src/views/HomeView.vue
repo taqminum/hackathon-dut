@@ -31,6 +31,14 @@ const mode = computed({
 // 所以出现了「标题对了、输入框还是坐标」。
 const origin = ref('')
 const destination = ref('')
+// 城市既控制联想范围，也会随路线请求交给后端进行逆地理校验。默认大连是项目的
+// 演示城市，但不是硬编码限制，用户可以直接输入其它城市。
+const city = ref('大连市')
+const CITY_OPTIONS = [
+  '大连市', '北京市', '上海市', '广州市', '深圳市', '杭州市', '南京市', '苏州市',
+  '武汉市', '成都市', '重庆市', '西安市', '天津市', '青岛市', '厦门市', '长沙市',
+  '郑州市', '昆明市', '哈尔滨市', '沈阳市', '济南市', '福州市', '宁波市', '无锡市',
+]
 // R2：提交时优先用的坐标。后端对坐标串支持最好（见 PlaceInput 的注释），
 // 所以显示地名不等于丢掉坐标：两者并存，payload 取坐标。
 // 手输入或从下拉选中都会把它清掉（那两种情况下 origin 自己就是要发的值）。
@@ -133,6 +141,7 @@ async function handleSubmit(modeOverride) {
       destination: (destinationCoord.value || destination.value).trim(),
       mode: override || mode.value,
       poiCount: poiCount.value,
+      city: city.value.trim(),
       // T1：只用于显示。后端不认这两个字段（Body(..., embed=True) 逐字段取值，
       // 多余的键会被忽略），所以带上它们不会破坏请求。
       originLabel: originLabel.value.trim(),
@@ -146,6 +155,7 @@ async function handleSubmit(modeOverride) {
       destination: payload.destination,
       mode: payload.mode,
       poiCount: payload.poiCount,
+      city: payload.city,
     })
 
     if (!result?.route) {
@@ -167,8 +177,9 @@ async function handleSubmit(modeOverride) {
  * R2：带 labels 时输入框显示地名，原来的坐标存进 originCoord 供提交用。
  * 不带 labels 时（手动调用、或历史记录没存地名）退回原行为：输入框就是要发的值。
  */
-function fillDemo(newOrigin, newDestination, newMode, labels = null) {
+function fillDemo(newOrigin, newDestination, newMode, labels = null, cityName = '大连市') {
   mode.value = newMode
+  city.value = cityName
   // 标签在提交前就要落定：payload 在 handleSubmit 里组装，晚一帧就来不及了
   if (labels) {
     originLabel.value = labels.origin || ''
@@ -203,14 +214,14 @@ function applyHistory(item) {
   return fillDemo(item.origin, item.destination, item.mode || mode.value, {
     origin: item.originLabel,
     destination: item.destinationLabel,
-  })
+  }, item.city || '大连市')
 }
 
 function removeHistory() {
   history.value = clearHistory()
 }
 
-const suggest = (payload) => api.suggestPlaces(payload)
+const suggest = (payload) => api.suggestPlaces({ ...payload, city: city.value.trim() })
 
 onMounted(() => {
   history.value = loadHistory()
@@ -241,6 +252,21 @@ defineExpose({ handleSubmit, fillDemo })
       </div>
 
       <form class="home__form bh-card" novalidate @submit.prevent="handleSubmit">
+        <label class="home__city">
+          <span class="bh-label">所在城市</span>
+          <input
+            v-model="city"
+            class="home__city-input"
+            list="city-options"
+            autocomplete="address-level2"
+            :disabled="loading"
+            aria-label="所在城市"
+          />
+          <datalist id="city-options">
+            <option v-for="option in CITY_OPTIONS" :key="option" :value="option" />
+          </datalist>
+          <small>起点、终点和地点联想都会锁定在此城市</small>
+        </label>
         <div class="home__pair">
           <PlaceInput
             v-model="origin"
@@ -487,6 +513,26 @@ defineExpose({ handleSubmit, fillDemo })
   position: absolute;
   opacity: 0;
   pointer-events: none;
+}
+
+.home__city {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 1.2rem;
+}
+
+.home__city-input {
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--line, #d7d6cf);
+  border-radius: 0.6rem;
+  background: var(--paper, #fffdf7);
+  color: inherit;
+  font: inherit;
+}
+
+.home__city small {
+  color: var(--muted, #6f6d66);
 }
 
 .home__stop-option strong {

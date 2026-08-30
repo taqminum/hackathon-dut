@@ -36,6 +36,7 @@ describe('recommendRoute', () => {
       destination: '星海广场',
       mode: '+15',
       poi_count: 1,
+      city: '大连市',
     })
   })
 

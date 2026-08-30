@@ -22,7 +22,7 @@ from app.routes.api import (
 )
 from app.services.dalian import landmark
 from app.services.poi_explorer import explore_pois_along_route
-from app.services.route_engine import get_candidate_routes, point_to_route_meters
+from app.services.route_engine import SOURCE_AMAP, get_candidate_routes, point_to_route_meters
 
 DEMO_PAIRS = (("dut", "xinghai"), ("donggang", "laohutan"), ("xianlu", "fujiazhuang"))
 MODES = ("+5", "+15", "roam")
@@ -182,9 +182,9 @@ def test_highlights_prefer_on_theme_pois_over_higher_rated_dining():
 
 def test_prepare_poi_candidates_prefers_on_theme_pois_with_close_ratings():
     pois = [
-        {"name": "高分烧烤店", "type": "餐饮服务;中餐厅;烧烤", "rating": 4.6,
+        {"name": "高分烧烤店", "type": "餐饮服务;中餐厅;烧烤", "rating": 4.6, "source": SOURCE_AMAP,
          "location": "121.5200,38.8850", "navigation_location": "121.5200,38.8850"},
-        {"name": "沿途公园", "type": "风景名胜;公园广场;公园", "rating": 4.5,
+        {"name": "沿途公园", "type": "风景名胜;公园广场;公园", "rating": 4.5, "source": SOURCE_AMAP,
          "location": "121.5201,38.8851", "navigation_location": "121.5201,38.8851"},
     ]
 

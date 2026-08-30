@@ -10,12 +10,13 @@
 对外只有 WGS-84：高德返回的是 GCJ-02，这里转完再交出去。
 """
 
+import functools
 import math
 import os
 
 import requests
 
-from app.services.coord import gcj02_str_to_wgs84_str
+from app.services.coord import gcj02_str_to_wgs84_str, wgs84_str_to_gcj02_str
 from app.services.dalian import landmark, landmark_slug
 
 # 限流是进程级的，必须所有打高德的模块共用同一个实例，否则 10021 照旧会出现。
@@ -26,6 +27,7 @@ from app.services.route_engine import throttle_amap
 
 AMAP_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo"
 AMAP_PLACE_TEXT_URL = "https://restapi.amap.com/v3/place/text"
+AMAP_REGEOCODE_URL = "https://restapi.amap.com/v3/geocode/regeo"
 GEOCODING_URL = "https://nominatim.openstreetmap.org/search"
 
 # 不再把真实地点解析锁死在大连。前端从高德联想选中时直接提交坐标；手工输入地名时
@@ -35,7 +37,7 @@ DEFAULT_CITY = ""
 DALIAN_VIEWBOX = "120.9,39.6,123.0,38.4"
 
 
-def resolve_location(location: str | None) -> str:
+def resolve_location(location: str | None, city: str = "") -> str:
     value = str(location or "").strip()
     if not value:
         raise ValueError("location is empty")
@@ -47,9 +49,11 @@ def resolve_location(location: str | None) -> str:
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid coordinates") from exc
 
-    # 有 Key 就先打高德：真实路网下真实坐标最准，也保留城市偏置。
+    selected_city = str(city or "").strip()
+    # 有 Key 就先打高德：真实路网下真实坐标最准。所选城市必须传入，不能只把
+    # citylimit 用在联想框，否则手输「星海广场」仍可能解析到外省同名地点。
     if os.getenv("AMAP_KEY"):
-        resolved = _resolve_with_amap(value) or _resolve_poi_with_amap(value)
+        resolved = _resolve_with_amap(value, selected_city) or _resolve_poi_with_amap(value, selected_city)
         if resolved:
             return resolved
 
@@ -70,14 +74,73 @@ def resolve_location(location: str | None) -> str:
     return _resolve_with_nominatim(value)
 
 
-def _resolve_with_amap(value: str) -> str | None:
+def ensure_location_in_city(location: str, city: str) -> bool:
+    """确认一个 WGS-84 坐标属于所选城市。
+
+    输入提示的 ``citylimit`` 只能约束下拉列表；手工输入地名或直接提交坐标仍可能
+    跨城。因此正式请求再用高德逆地理编码拿到行政区划代码，与城市编码的前四位
+    比较。四位是地级市粒度，也同时适用于北京、上海等直辖市。
+    """
+    selected_city = str(city or "").strip()
+    if not selected_city:
+        raise ValueError("请选择城市")
+    key = os.getenv("AMAP_KEY")
+    if not key:
+        # 调用方只在真实高德链路启用此校验；保留这个防御分支便于离线单测。
+        return True
+
+    city_adcode = _city_adcode(selected_city)
+    point_adcode = _reverse_adcode(location)
+    if not city_adcode or not point_adcode:
+        raise RuntimeError("无法核实地点所在城市")
+    return city_adcode[:4] == point_adcode[:4]
+
+
+@functools.lru_cache(maxsize=64)
+def _city_adcode(city: str) -> str | None:
+    try:
+        throttle_amap()
+        response = requests.get(
+            AMAP_GEOCODE_URL,
+            params={"address": city, "key": os.getenv("AMAP_KEY")},
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError("城市范围校验服务不可用") from exc
+    geocodes = data.get("geocodes") if isinstance(data, dict) else None
+    first = geocodes[0] if isinstance(geocodes, list) and geocodes else None
+    adcode = first.get("adcode") if isinstance(first, dict) else None
+    return str(adcode) if isinstance(adcode, str) and len(adcode) >= 4 else None
+
+
+def _reverse_adcode(location: str) -> str | None:
+    gcj_location = wgs84_str_to_gcj02_str(location) or location
+    try:
+        throttle_amap()
+        response = requests.get(
+            AMAP_REGEOCODE_URL,
+            params={"location": gcj_location, "key": os.getenv("AMAP_KEY"), "radius": 0},
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError("城市范围校验服务不可用") from exc
+    component = data.get("regeocode", {}).get("addressComponent", {}) if isinstance(data, dict) else {}
+    adcode = component.get("adcode") if isinstance(component, dict) else None
+    return str(adcode) if isinstance(adcode, str) and len(adcode) >= 4 else None
+
+
+def _resolve_with_amap(value: str, city: str = "") -> str | None:
     """高德地理编码。任何异常都返回 None，让调用方退回 Nominatim。"""
     params = {
         "address": value,
         "key": os.getenv("AMAP_KEY"),
     }
-    if DEFAULT_CITY:
-        params["city"] = DEFAULT_CITY
+    if city:
+        params["city"] = city
 
     try:
         throttle_amap()
@@ -112,7 +175,7 @@ def _resolve_with_amap(value: str) -> str | None:
         return None
 
 
-def _resolve_poi_with_amap(value: str) -> str | None:
+def _resolve_poi_with_amap(value: str, city: str = "") -> str | None:
     """地址编码找不到时，用高德 POI 关键字搜索补足商店、景点和场馆名称。"""
     params = {
         "keywords": value,
@@ -120,6 +183,8 @@ def _resolve_poi_with_amap(value: str) -> str | None:
         "page": 1,
         "key": os.getenv("AMAP_KEY"),
     }
+    if city:
+        params.update({"city": city, "citylimit": "true"})
     try:
         throttle_amap()
         response = requests.get(AMAP_PLACE_TEXT_URL, params=params, timeout=10)

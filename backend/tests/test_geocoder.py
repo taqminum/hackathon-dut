@@ -2,7 +2,7 @@ import requests_mock
 import pytest
 
 from app.services.dalian import LANDMARK_ALIASES, LANDMARKS, landmark
-from app.services.geocoder import resolve_location
+from app.services.geocoder import ensure_location_in_city, resolve_location
 
 
 @pytest.mark.parametrize(
@@ -22,6 +22,7 @@ def test_resolve_location_normalizes_valid_coordinates():
 
 
 AMAP_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo"
+AMAP_REGEOCODE_URL = "https://restapi.amap.com/v3/geocode/regeo"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
 
@@ -44,6 +45,17 @@ def test_resolve_location_uses_global_amap_geocoding_when_key_present(monkeypatc
     assert request.qs["address"] == ["星海广场"]
     # 命中高德就不该再打 Nominatim
     assert all("nominatim" not in item.hostname for item in mocker.request_history)
+
+
+def test_resolve_location_sends_selected_city_to_amap(monkeypatch):
+    monkeypatch.setenv("AMAP_KEY", "test-key")
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            AMAP_GEOCODE_URL,
+            json={"status": "1", "geocodes": [{"location": "121.588870,38.882379"}]},
+        )
+        assert resolve_location("星海广场", "大连市") == "121.5839,38.8816"
+    assert mocker.request_history[0].qs["city"] == ["大连市"]
 
 
 def test_resolve_location_keeps_dalian_landmarks_inside_dalian(monkeypatch):
@@ -238,3 +250,25 @@ def test_resolve_location_does_not_geocode_coordinates(monkeypatch):
     with requests_mock.Mocker() as mocker:
         assert resolve_location("121.5839,38.8816") == "121.5839,38.8816"
         assert mocker.request_history == []
+
+
+def test_city_validation_compares_city_level_adcodes(monkeypatch):
+    monkeypatch.setenv("AMAP_KEY", "test-key")
+    with requests_mock.Mocker() as mocker:
+        mocker.get(AMAP_GEOCODE_URL, json={"status": "1", "geocodes": [{"adcode": "210200"}]})
+        mocker.get(
+            AMAP_REGEOCODE_URL,
+            json={"status": "1", "regeocode": {"addressComponent": {"adcode": "210211"}}},
+        )
+        assert ensure_location_in_city("121.5839,38.8816", "大连市") is True
+
+
+def test_city_validation_rejects_other_city(monkeypatch):
+    monkeypatch.setenv("AMAP_KEY", "test-key")
+    with requests_mock.Mocker() as mocker:
+        mocker.get(AMAP_GEOCODE_URL, json={"status": "1", "geocodes": [{"adcode": "210200"}]})
+        mocker.get(
+            AMAP_REGEOCODE_URL,
+            json={"status": "1", "regeocode": {"addressComponent": {"adcode": "110101"}}},
+        )
+        assert ensure_location_in_city("116.4039,39.9140", "大连市") is False

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from app.models.preference import PreferenceManager
 from app.services.coord import gcj02_str_to_wgs84_str
 from app.services.detour_calculator import calculate_detour
-from app.services.geocoder import normalize_coordinate, resolve_location
+from app.services.geocoder import ensure_location_in_city, normalize_coordinate, resolve_location
 from app.services.narrative import DEFAULT_NARRATIVE, generate_narrative
 from app.services.poi_explorer import explore_pois_along_route, poi_fit_score
 from app.services.route_engine import (
@@ -66,7 +66,22 @@ TOTAL_BUDGET_SECONDS = 25.0
 POI_SEARCH_RADIUS = 400
 POI_SEARCH_RADIUS_BY_MODE = {"+5": 300, "+15": 600, "roam": 1000}
 # 使用高德官方分类大类，不依赖「餐饮 / 景点」这类非标准模糊词。
-AMAP_POI_TYPES = ["050000", "060000", "080000", "110000", "140000"]
+# 只搜索高德的风景名胜与科教文化服务大类。餐饮、商业、洗浴等类别从数据源就不
+# 进入候选池；下方仍有关键词二次过滤，防止分类标错的普通商业 POI 混进来。
+AMAP_POI_TYPES = [
+    "110000",  # 风景名胜
+    "140300", "140400", "140500", "140600", "140700", "140800", "140900",
+    "141000", "141100", "141200",  # 图书/科技/天文/文化宫/档案/文物/博物/展览/会展/美术
+]
+DISCOVERY_EXCLUDED_WORDS = (
+    "餐", "咖啡", "奶茶", "酒吧", "ktv", "夜总会", "洗浴", "洗澡", "spa", "会所",
+    "足疗", "按摩", "商场", "购物", "超市", "便利店", "酒店", "宾馆", "旅馆", "美容",
+    "美发", "健身", "售楼", "公司", "银行", "停车场", "培训", "教育", "学校", "幼儿园", "驾校",
+    "出版社", "影视", "电视台", "广播", "报社", "通讯社", "印刷",
+)
+HERITAGE_WORDS = ("古迹", "遗址", "文物", "纪念", "博物", "美术", "故居", "寺", "塔", "牌坊")
+SCENIC_WORDS = ("风景", "景区", "公园", "海滨", "湿地", "森林", "山", "湖", "海", "岛")
+CULTURAL_WORDS = ("文化", "展览", "图书", "剧院", "大学", "书院", "艺术")
 SUPPORTED_POI_COUNTS = {1, 2, 3}
 MAX_ROUTE_SET_EVALUATIONS = 3
 
@@ -103,6 +118,7 @@ def recommend_route(
     destination: str = Body(..., embed=True),
     mode: str = Body("+5", embed=True),
     poi_count: int = Body(1, embed=True),
+    city: str | None = Body(None, embed=True),
 ):
     started_at = time.monotonic()
 
@@ -110,6 +126,7 @@ def recommend_route(
         raise HTTPException(status_code=422, detail="不支持的探索模式")
     if poi_count not in SUPPORTED_POI_COUNTS:
         raise HTTPException(status_code=422, detail="一次可绕行 1 到 3 个地点")
+    city = city.strip() if isinstance(city, str) else ""
 
     # 校验通过后立刻记下模式：`GET /api/preference` 是演示时用来证明「它记住了」的，
     # 只靠反馈写入的话，用户连点三次 +15 那个接口还会显示 +5。
@@ -119,12 +136,27 @@ def recommend_route(
         raise HTTPException(status_code=404, detail="未找到可行路线")
 
     try:
-        resolved_origin = resolve_location(origin)
-        resolved_destination = resolve_location(destination)
+        resolved_origin = resolve_location(origin, city) if city else resolve_location(origin)
+        resolved_destination = (
+            resolve_location(destination, city) if city else resolve_location(destination)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="未找到可行路线") from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=502, detail=f"地点解析失败：{exc}") from exc
+
+    # 网页客户端始终提交城市；保留 city 缺省兼容旧版本客户端，避免旧调用被默默
+    # 改成大连市而误拒绝。新客户端缺城市时不会发生（首页有默认值）。
+    if city and os.getenv("AMAP_KEY"):
+        try:
+            in_city = all(
+                ensure_location_in_city(point, city)
+                for point in (resolved_origin, resolved_destination)
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail="无法核实地点所在城市，请稍后重试") from exc
+        if not in_city:
+            raise HTTPException(status_code=422, detail="起点和终点必须位于所选城市内")
 
     if resolved_origin == resolved_destination:
         raise HTTPException(status_code=422, detail="起点和终点不能相同")
@@ -166,6 +198,11 @@ def recommend_route(
 
     if not pois:
         raise HTTPException(status_code=404, detail="这条路线沿线没有找到可核实的值得绕行地点")
+
+    if baseline.get("source") == SOURCE_AMAP:
+        pois = [poi for poi in pois if _discovery_kind(poi)]
+        if not pois:
+            raise HTTPException(status_code=404, detail="这条路线沿线没有找到文化或风景类绕行地点")
 
     # 单点候选需要逐个走真实路网，才能比较绕行时间；多点如果也先逐个规划，
     # 6 个候选会额外消耗 12 次步行请求，等真正组合路线时总预算已经耗尽。
@@ -321,7 +358,12 @@ def _safe_narrative(route: dict, mode: str, pois: list, origin: str, destination
     """
     try:
         return generate_narrative(
-            route, mode, pois=pois, origin=origin, destination=destination
+            route,
+            mode,
+            pois=pois,
+            origin=origin,
+            destination=destination,
+            allow_demo_narrative=route.get("source") != SOURCE_AMAP,
         )
     except Exception:
         return DEFAULT_NARRATIVE
@@ -354,11 +396,8 @@ def _prepare_poi_candidates(pois: list) -> list[tuple[dict, str]]:
 
 def _preliminary_poi_quality(poi: dict) -> tuple[float, int, str]:
     rating = _normalize_rating(poi.get("rating", 0))
-    # 无评分不是 0 分。给中性值只用于候选排序，接口仍原样返回 rating=0。
-    quality = rating if rating > 0 else 3.8
-    poi_type = str(poi.get("type") or "")
-    non_commercial = int(any(word in poi_type for word in ("风景", "公园", "博物", "文化", "美术")))
-    return quality + 0.25 * poi_fit_score(poi_type), non_commercial, str(poi.get("name") or "")
+    # 类别优先，评分只作为同类目的次级排序，不能让一家高分餐饮挤掉文化地点。
+    return _recommendation_quality(poi), rating, str(poi.get("name") or "")
 
 
 def _evaluate_candidate(
@@ -397,13 +436,12 @@ def _evaluate_candidate(
     # R4：这个 POI 离基准路线多远。这是模式差异的输入 —— 兜底数据下绕行分钟数
     # 常常是 0（7 公里的路上绕 100 米不到一分钟），只靠 detour_minutes 分不开三个模式。
     off_route_meters = point_to_route_meters(poi_coord, baseline.get("polyline"))
-    rating = _normalize_rating(poi.get("rating", 0))
     # 标签这一维现在真的参与打分：affinity 来自用户此前的反馈（PreferenceManager）。
     # 没有任何反馈时是 0.0（中性），行为与改造前接近；点过「一般」的类目会被压低，
     # 点过「还不错」的会被抬高 —— 这就是「下次帮你换一条」的实现。
     score = scorer.score(
         detour_minutes=detour_minutes,
-        poi_quality=rating / 5.0,
+        poi_quality=_recommendation_quality(poi),
         tag_affinity=preferences.affinity(poi.get("type")),
     )
 
@@ -465,18 +503,15 @@ def _metadata_candidates(pois: list, baseline: dict) -> list[dict]:
         offset = point_to_route_meters(coord, baseline.get("polyline"))
         if offset is None:
             continue
-        rating = _normalize_rating(poi.get("rating", 0))
-        quality = (rating if rating > 0 else 3.8) / 5.0
         candidates.append(
             {
                 "poi": poi,
                 "off_route_meters": offset,
                 "score": scorer.score(
                     detour_minutes=0,
-                    poi_quality=quality,
+                    poi_quality=_recommendation_quality(poi),
                     tag_affinity=preferences.affinity(poi.get("type")),
-                )
-                + 0.3 * poi_fit_score(poi.get("type")),
+                ),
             }
         )
     return candidates
@@ -615,9 +650,7 @@ def _choose_route_candidate(
 
 
 def _score_poi_set(items: list[dict], detour_minutes: float) -> float:
-    ratings = [_normalize_rating(item["poi"].get("rating", 0)) for item in items]
-    # 没有地图评分时使用中性质量参与算法，但绝不写回响应或页面。
-    qualities = [(rating if rating > 0 else 3.8) / 5.0 for rating in ratings]
+    qualities = [_recommendation_quality(item["poi"]) for item in items]
     affinities = [preferences.affinity(item["poi"].get("type")) for item in items]
     return scorer.score(
         detour_minutes=detour_minutes,
@@ -643,6 +676,7 @@ def _waypoint_highlights(chosen: dict, baseline: dict) -> list[dict]:
             "off_route_meters": route_offset,
         }
         enriched["introduction"] = _poi_introduction(enriched)
+        enriched["discovery_kind"] = _discovery_kind(enriched)
         enriched["reason"] = _poi_reason(enriched)
         highlights.append(enriched)
     return highlights
@@ -660,7 +694,8 @@ def _poi_introduction(poi: dict) -> str:
 
 
 def _poi_reason(poi: dict) -> str:
-    facts = []
+    kind = _discovery_kind(poi)
+    facts = [{"heritage": "古迹与人文地标优先", "scenic": "风景与自然地点优先", "cultural": "文化场馆优先"}.get(kind, "真实地点信息")]
     rating = _normalize_rating(poi.get("rating", 0))
     if rating > 0:
         facts.append(f"高德评分 {rating:.1f}")
@@ -673,6 +708,45 @@ def _poi_reason(poi: dict) -> str:
     if poi_type:
         facts.append(poi_type)
     return "，".join(facts)
+
+
+def _discovery_kind(poi: dict) -> str:
+    """只保留文化/风景候选，并抵挡高德分类不精确时的商业名称。"""
+    typecode = str(poi.get("typecode") or "")
+    text = " ".join(str(poi.get(field) or "") for field in ("name", "type", "address")).lower()
+    if any(word in text for word in DISCOVERY_EXCLUDED_WORDS):
+        return ""
+    if typecode.startswith("14") and not typecode.startswith(
+        ("1403", "1404", "1405", "1406", "1407", "1408", "1409", "1410", "1411", "1412")
+    ):
+        return ""
+    if any(word in text for word in HERITAGE_WORDS):
+        return "heritage"
+    if any(word in text for word in SCENIC_WORDS):
+        return "scenic"
+    if any(word in text for word in CULTURAL_WORDS):
+        return "cultural"
+    if typecode.startswith("140"):
+        return "cultural"
+    if typecode.startswith("110"):
+        return "scenic"
+    return ""
+
+
+def _discovery_quality(poi: dict) -> float:
+    """类别是主信号；高德评分仅作小幅同类打破平局，不假造客流数据。"""
+    base = {"heritage": 0.98, "scenic": 0.91, "cultural": 0.85}.get(_discovery_kind(poi), 0.0)
+    rating = _normalize_rating(poi.get("rating", 0))
+    # 高德 v3 POI 响应并不稳定提供评价人数，不能把「高分」谎称为「小众宝藏」。
+    return min(1.0, base + (rating / 5.0) * 0.02)
+
+
+def _recommendation_quality(poi: dict) -> float:
+    """线上真实候选使用发现策略；仅用于旧离线演示数据时保留原评分行为。"""
+    if poi.get("source") == SOURCE_AMAP:
+        return _discovery_quality(poi)
+    rating = _normalize_rating(poi.get("rating", 0))
+    return (rating if rating > 0 else 3.8) / 5.0
 
 
 def _normalize_rating(value) -> float:

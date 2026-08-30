@@ -371,8 +371,9 @@ def test_recommend_route_returns_success_when_places_have_pois(client, monkeypat
         "status": "1",
         "pois": [
             {
-                "name": "\u5076\u9047\u5c0f\u5e97",
-                "type": "\u9910\u996e",
+                "name": "\u6cbf\u7ebf\u516c\u56ed",
+                "type": "\u98ce\u666f\u540d\u80dc;\u516c\u56ed\u5e7f\u573a;\u516c\u56ed",
+                "typecode": "110101",
                 "distance": "320",
                 "rating": "4.6",
                 "location": f"{poi_geo['lon']},{poi_geo['lat']}",
@@ -469,7 +470,7 @@ def test_recommend_route_returns_success_when_places_have_pois(client, monkeypat
     # R6：另加四个扩展字段。这份桩响应里一个都没有，所以全是空串 ——
     # 端到端也要确认「没取到就是空」，而不是在中间某层被填上占位文本。
     assert len(body["pois"]) == 1
-    assert body["pois"][0]["name"] == "偶遇小店"
+    assert body["pois"][0]["name"] == "沿线公园"
     assert body["pois"][0]["location"] == "120.130242,30.259292"
     assert body["pois"][0]["rating"] == 4.6
     assert body["pois"][0]["source"] == "amap"

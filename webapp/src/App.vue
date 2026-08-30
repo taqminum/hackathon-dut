@@ -72,6 +72,7 @@ async function onReplan(nextMode) {
       destination: request.destination,
       mode,
       poiCount: request.poiCount || 1,
+      city: request.city || '大连市',
     })
     if (!result?.route) {
       replanError.value = '这次没算出可用路线，起终点没变，可以再试一次'
