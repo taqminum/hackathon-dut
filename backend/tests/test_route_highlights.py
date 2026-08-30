@@ -17,10 +17,11 @@ import pytest
 from app.routes.api import (
     _choose_candidate,
     _collect_highlights,
+    _drop_destination_neighbors,
     _evaluate_candidates,
     _prepare_poi_candidates,
 )
-from app.services.dalian import landmark
+from app.services.dalian import LANDMARKS, landmark
 from app.services.poi_explorer import explore_pois_along_route
 from app.services.route_engine import SOURCE_AMAP, get_candidate_routes, point_to_route_meters
 
@@ -191,3 +192,96 @@ def test_prepare_poi_candidates_prefers_on_theme_pois_with_close_ratings():
     prepared = _prepare_poi_candidates(pois)
 
     assert [item[0]["name"] for item in prepared] == ["沿途公园", "高分烧烤店"]
+
+
+def test_drop_destination_neighbors_excludes_destination_poi():
+    """目的地自身（如星海广场）不能当成「途中偶遇」推荐回去。"""
+    destination = "121.583926,38.881623"
+    pois = [
+        {"name": "星海广场", "type": "风景名胜;公园广场;城市广场", "location": "121.582977,38.881249"},
+        {"name": "途中公园", "type": "风景名胜;公园广场;公园", "location": "121.550000,38.885000"},
+    ]
+
+    kept = _drop_destination_neighbors(pois, destination)
+
+    assert [poi["name"] for poi in kept] == ["途中公园"]
+
+
+def test_drop_destination_neighbors_keeps_pois_near_the_origin():
+    """起点附近的地点仍算「刚出发就看见的沿途」，不应被目的地过滤误删。"""
+    destination = "121.583926,38.881623"
+    pois = [
+        {"name": "起点小店", "location": "121.5198,38.8856"},
+        {"name": "星海广场", "location": "121.582977,38.881249"},
+    ]
+
+    kept = _drop_destination_neighbors(pois, destination)
+
+    assert [poi["name"] for poi in kept] == ["起点小店"]
+
+
+def test_drop_destination_neighbors_keeps_pois_without_coordinate():
+    """无坐标的 POI 在这里放行，交给候选准备阶段统一丢弃。"""
+    destination = "121.583926,38.881623"
+    pois = [
+        {"name": "无坐标店", "type": "餐饮"},
+        {"name": "星海广场", "location": "121.582977,38.881249"},
+    ]
+
+    kept = _drop_destination_neighbors(pois, destination)
+
+    assert [poi["name"] for poi in kept] == ["无坐标店"]
+
+
+def test_drop_destination_neighbors_excludes_same_named_poi_beyond_distance_threshold():
+    """同名地点（如目的地地铁站）在 300 米外仍要剔除。"""
+    destination = "121.583926,38.881623"
+    pois = [
+        {"name": "星海广场地铁站", "type": "风景名胜;公园广场;城市广场", "location": "121.587000,38.882000"},
+        {"name": "途中公园", "type": "风景名胜;公园广场;公园", "location": "121.560000,38.885000"},
+    ]
+
+    kept = _drop_destination_neighbors(pois, destination, destination_name="星海广场")
+
+    assert [poi["name"] for poi in kept] == ["途中公园"]
+
+
+def test_drop_destination_neighbors_keeps_far_away_poi_with_same_name():
+    """同名但远在几千公里外的 POI 不受影响，不能把别处同名地标误删。"""
+    destination = "121.583926,38.881623"
+    pois = [{"name": "星海广场", "location": "104.000000,30.000000"}]
+
+    kept = _drop_destination_neighbors(pois, destination, destination_name="星海广场")
+
+    assert [poi["name"] for poi in kept] == ["星海广场"]
+
+
+@pytest.mark.parametrize("_,destination_slug", DEMO_PAIRS)
+def test_destination_name_filter_applies_to_all_demo_scenarios(_, destination_slug):
+    """同名/自身 POI 过滤对三个演示目的地都生效，不能只修星海广场一个例子。"""
+    destination_label, lng, lat = LANDMARKS[destination_slug]
+    destination = landmark(destination_slug)
+    nearby_same_name = {
+        "name": f"{destination_label}地铁站",
+        "location": f"{lng + 0.005:.6f},{lat + 0.002:.6f}",
+    }
+    far_same_name = {"name": destination_label, "location": "104.000000,30.000000"}
+    far_other = {"name": "沿途公园", "location": "121.560000,38.885000"}
+
+    kept = _drop_destination_neighbors(
+        [nearby_same_name, far_same_name, far_other],
+        destination,
+        destination_name=destination_label,
+    )
+
+    assert [poi["name"] for poi in kept] == [destination_label, "沿途公园"]
+
+
+def test_drop_destination_neighbors_matches_short_alias():
+    """输入短别名（如「星海」）也能命中同名的完整地点，不依赖用户打全名。"""
+    destination = "121.583926,38.881623"
+    pois = [{"name": "星海广场地铁站", "location": "121.587000,38.882000"}]
+
+    kept = _drop_destination_neighbors(pois, destination, destination_name="星海")
+
+    assert kept == []

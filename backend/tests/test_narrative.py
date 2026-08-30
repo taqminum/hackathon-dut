@@ -6,6 +6,8 @@ from app.services.dalian import landmark, scenario_key
 from app.services.narrative import (
     DALIAN_SCENARIO_NARRATIVES,
     DEFAULT_NARRATIVE,
+    _build_prompt,
+    _clean_llm_narrative,
     generate_narrative,
 )
 from app.services.route_engine import DALIAN_SCENARIOS
@@ -41,6 +43,39 @@ def test_generate_narrative_sends_bearer_token_when_key_configured():
 
     _, kwargs = mock_post.call_args
     assert kwargs["headers"] == {"Authorization": "Bearer sk-test-123"}
+
+
+def test_build_prompt_asks_for_short_human_text_with_real_poi_names():
+    prompt = _build_prompt(
+        {"distance": 7200, "duration": 5400},
+        "+15",
+        pois=[{"name": "星海公园", "type": "风景名胜;公园广场;公园"}],
+    )
+
+    assert "一到两句" in prompt
+    assert "口语化" in prompt
+    assert "禁止编造" in prompt
+    assert "星海公园" in prompt
+    assert "7.2公里" in prompt
+    assert "90分钟" in prompt
+    assert "愿意多绕一段" in prompt
+    # 原始 route JSON 不再整段塞给模型
+    assert "polyline" not in prompt
+
+
+def test_clean_llm_narrative_strips_preamble_and_markdown():
+    text = _clean_llm_narrative("好的，以下是为您推荐的路线：\n- 第一站：星海公园\n- 第二站：海边")
+
+    assert text == "第一站：星海公园 第二站：海边"
+
+
+def test_clean_llm_narrative_truncates_overlong_marketing_copy():
+    long_text = "这是一段非常长的推荐文案。" * 30
+
+    cleaned = _clean_llm_narrative(long_text)
+
+    assert len(cleaned) <= 160
+    assert cleaned.endswith("。")
 
 
 def test_generate_narrative_timeout_fallback():

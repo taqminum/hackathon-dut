@@ -177,6 +177,55 @@ def test_recommend_route_excludes_pois_far_from_the_chosen_route(client, monkeyp
     assert names == ["顺路的店"], f"3.9 公里外的店不该进沿途亮点: {names}"
 
 
+def test_recommend_route_excludes_the_destination_itself_from_highlights(client, monkeypatch):
+    """终点同名/自身地点（如星海广场）不能当成「途中偶遇」推荐回去。
+
+    高德 place/around 会把目的地自身也捞进采样走廊；若不剔除，推荐就会变成
+    「绕路去终点」这种自指结果，叙事也跟着串味。
+    """
+    origin = "121.5197,38.8856"
+    destination = "121.583926,38.881623"
+    on_route = {
+        "name": "途中公园",
+        "type": "风景名胜;公园广场;公园",
+        "rating": 4.2,
+        "location": "121.5600,38.8840",
+    }
+    destination_poi = {
+        "name": "星海广场",
+        "type": "风景名胜;公园广场;城市广场",
+        "rating": 4.9,
+        "location": "121.582977,38.881249",
+    }
+
+    def fake_routes(origin, destination, mode, waypoint=None):
+        return [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1000,
+            "duration": 301 if waypoint else 300,
+            "steps": [],
+            "polyline": f"{origin};{waypoint or destination};{destination}",
+        }]
+
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    monkeypatch.setattr("app.routes.api.get_candidate_routes", fake_routes)
+    monkeypatch.setattr(
+        "app.routes.api.explore_pois_along_route",
+        lambda *args, **kwargs: [destination_poi, on_route],
+    )
+
+    response = client.post(
+        "/api/route/recommend",
+        json={"origin": origin, "destination": destination, "mode": "+5"},
+    )
+
+    assert response.status_code == 200
+    names = [poi["name"] for poi in response.json()["pois"]]
+    assert "星海广场" not in names
+    assert "途中公园" in names
+
+
 def test_recommend_route_returns_requested_waypoint_count_in_demo_mode(client, monkeypatch):
     """断网演示时每组场景有 2 个兜底 POI，两个都该出现在「沿途亮点」里。
 

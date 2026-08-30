@@ -2,6 +2,7 @@ import concurrent.futures
 import itertools
 import math
 import os
+import re
 import threading
 import time
 from itertools import combinations
@@ -96,6 +97,14 @@ MAX_RETURNED_POIS = 3
 # 卖「偶遇」的产品不能在这句话上注水，宁可只返回一个亮点。
 # 150 米足够覆盖一个街区内的旁边亮点，同时不会把地图上的标记放到另一条街。
 NEARBY_POI_METERS = 150
+# 目的地自身、以及和目的地同名的地铁站/公交站，会从 place/around 的采样走廊里
+# 漏进来，离终点常常不足 100 米，却会被当成「途中偶遇」推荐回去 —— 读起来像
+# 「为了去终点而绕路」。起终点周边这一圈也不该有「顺路偶遇」，直接剔除。
+ENDPOINT_EXCLUDE_METERS = 300
+# 只靠距离拦不全：同名地点（例如目的地出入口、同名地铁站）可能离终点 300~1000 米。
+# 对名称与目的地一致的 POI 放宽容忍范围，避免把「目的地本身/同名交通站」当成
+# 沿途亮点；远处另一座同名地点不受影响。
+DEST_NAME_MATCH_METERS = 1000
 
 INPUTTIPS_URL = "https://restapi.amap.com/v3/assistant/inputtips"
 # 收藏是进程内存储：演示够用，重启即失。要持久化再接数据库，
@@ -199,6 +208,8 @@ def recommend_route(
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    pois = _drop_destination_neighbors(pois, resolved_destination, destination_name=destination)
 
     if not pois:
         raise HTTPException(status_code=404, detail="这条路线沿线没有找到可核实的值得绕行地点")
@@ -386,6 +397,68 @@ def _safe_narrative(route: dict, mode: str, pois: list, origin: str, destination
         )
     except Exception:
         return DEFAULT_NARRATIVE
+
+
+def _drop_destination_neighbors(pois: list, destination: str, destination_name: str | None = None) -> list:
+    """剔除贴着目的地、被当成「途中偶遇」的 POI。
+
+    高德的 place/around 会把终点本身以及同名的地铁站、公交站一起捞进采样走廊，
+    它们离终点往往不足 100 米。这类地点不是沿途偶遇，推荐回去会变成
+    「为了去终点而绕路」，叙事也跟着串味。
+    无坐标的 POI 在这里放行，由后面的候选准备阶段统一丢弃。
+    """
+    anchor = _parse_coord(destination)
+    if anchor is None:
+        return list(pois)
+    destination_label = _normalize_name(destination_name)
+    kept: list = []
+    for poi in pois:
+        if not isinstance(poi, dict):
+            kept.append(poi)
+            continue
+        coord = _parse_coord(poi.get("navigation_location") or poi.get("location"))
+        if coord is None:
+            kept.append(poi)
+            continue
+        distance = _haversine_meters(coord, anchor)
+        poi_label = _normalize_name(poi.get("name"))
+        same_name = bool(destination_label) and bool(poi_label) and (
+            destination_label in poi_label or poi_label in destination_label
+        )
+        if distance <= ENDPOINT_EXCLUDE_METERS or (same_name and distance <= DEST_NAME_MATCH_METERS):
+            continue
+        kept.append(poi)
+    return kept
+
+
+def _normalize_name(value) -> str:
+    """地名归一化：去空白和括号内的解释性文字，保留用于同名判断的主名。"""
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[（(][^）)]*[）)]", "", value).replace(" ", "").replace("　", "")
+
+
+def _parse_coord(value) -> tuple[float, float] | None:
+    """解析 "lng,lat"（WGS-84），非法输入返回 None。"""
+    if not isinstance(value, str) or "," not in value:
+        return None
+    try:
+        lng, lat = (float(part) for part in value.split(",", 1))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lng) and math.isfinite(lat)):
+        return None
+    return lng, lat
+
+
+def _haversine_meters(start: tuple[float, float], end: tuple[float, float]) -> float:
+    lng1, lat1 = map(math.radians, start)
+    lng2, lat2 = map(math.radians, end)
+    value = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
+    )
+    return 6_371_000 * 2 * math.asin(math.sqrt(value))
 
 
 def _prepare_poi_candidates(pois: list) -> list[tuple[dict, str]]:

@@ -1,4 +1,5 @@
 import os
+import re
 
 import requests
 
@@ -64,7 +65,7 @@ def generate_narrative(
         response.raise_for_status()
         content = extract_content(response.json())
         if content:
-            return content
+            return _clean_llm_narrative(content)
     # 响应是合法 JSON 但结构不对时，取字段会抛 AttributeError / TypeError /
     # KeyError / IndexError。叙事是锦上添花，绝不能因为它让主接口 500，
     # 所以这里连结构异常一起吃掉，落到兜底文案。
@@ -90,10 +91,71 @@ def _fallback_narrative(
     )
 
 
+# 一屏内读完的短文案。模型偶尔无视 prompt 输出一整篇攻略，这里是最后一道闸。
+MAX_NARRATIVE_CHARS = 160
+
+# 同一模式的三种中文说法，prompt 里用自然语言而不是 +5 这种内部代号。
+MODE_LABELS = {"+5": "只愿意稍微绕路", "+15": "愿意多绕一段", "roam": "不赶时间随便走走"}
+
+
 def _build_prompt(route_data: dict, mode: str, pois: list | None) -> str:
+    """组 LLM prompt：只传精简的真实信息，并明确要短、口语化、不编造。
+
+    之前把整段 route JSON 丢给模型，它照抄出又长又空泛的营销文；这里换成
+    距离/时长/模式/亮点名，让模型只能在这些事实上做文章。
+    """
     names = [name for name, _ in _poi_highlights(pois)]
-    highlight = f"，沿途亮点：{'、'.join(names)}" if names else ""
-    return f"请根据路线数据生成一段探索叙事：{route_data}，模式：{mode}{highlight}"
+    facts = []
+    distance = route_data.get("distance")
+    duration = route_data.get("duration")
+    if isinstance(distance, (int, float)) and distance > 0:
+        facts.append(f"全程约{distance / 1000:.1f}公里")
+    if isinstance(duration, (int, float)) and duration > 0:
+        facts.append(f"步行约{round(duration / 60)}分钟")
+    facts.append(MODE_LABELS.get(mode, mode))
+    if names:
+        facts.append("沿途亮点：" + "、".join(names))
+
+    return (
+        "用一到两句口语化的中文给这条步行路线写推荐语，语气像本地朋友随口介绍，"
+        "不要写成广告或旅游攻略。"
+        f"路线信息：{'，'.join(facts)}。"
+        "只能提到上面出现的真实地点，禁止编造店名、人群、噪音、营业时间或价格；"
+        "不要标题、列表、emoji，也不要“好的”“以下”这类开场白。直接输出正文。"
+    )
+
+
+def _clean_llm_narrative(text: str) -> str:
+    """对 LLM 输出做最后一道轻清理，不重写内容。
+
+    去掉开头寒暄（「好的，以下…」）、markdown 列表符号，并把文案压进
+    MAX_NARRATIVE_CHARS 内（在句号处截断），防止模型无视 prompt 输出长文。
+    """
+    text = text.strip()
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r"^(好的[，,：:\s]*|以下是|以下为|以下)[，,：:\s]*", "", text)
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("-", "*", ">", "#")):
+            stripped = stripped.lstrip("-*>#").strip()
+        elif re.match(r"^\d+[\.、]", stripped):
+            stripped = re.sub(r"^\d+[\.、]", "", stripped).strip()
+        if stripped:
+            lines.append(stripped)
+    # 「为您推荐的路线：」这类冒号结尾的前导句整行丢掉，不是内容。
+    if len(lines) > 1 and lines[0].rstrip().endswith(("：", ":")):
+        lines = lines[1:]
+    cleaned = " ".join(lines)
+    if len(cleaned) <= MAX_NARRATIVE_CHARS:
+        return cleaned
+    cut = cleaned[:MAX_NARRATIVE_CHARS]
+    boundary = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"))
+    return cut[: boundary + 1] if boundary > 0 else cut
 
 
 def extract_content(data) -> str | None:
