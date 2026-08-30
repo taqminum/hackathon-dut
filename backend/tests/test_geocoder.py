@@ -1,6 +1,7 @@
 import requests_mock
 import pytest
 
+from app.services.dalian import LANDMARK_ALIASES, LANDMARKS, landmark
 from app.services.geocoder import resolve_location
 
 
@@ -24,8 +25,8 @@ AMAP_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
 
-def test_resolve_location_uses_amap_with_city_bias_when_key_present(monkeypatch):
-    """有 Key 就走高德，并且必须带 city —— 城市偏置是这次换实现的唯一理由。"""
+def test_resolve_location_uses_global_amap_geocoding_when_key_present(monkeypatch):
+    """有 Key 就走高德；真实地点输入不再被固定限制在大连。"""
     monkeypatch.setenv("AMAP_KEY", "test-key")
 
     with requests_mock.Mocker() as mocker:
@@ -39,7 +40,7 @@ def test_resolve_location_uses_amap_with_city_bias_when_key_present(monkeypatch)
 
     request = mocker.request_history[0]
     assert request.path_url.startswith("/v3/geocode/geo")
-    assert request.qs["city"] == ["大连"]
+    assert "city" not in request.qs
     assert request.qs["address"] == ["星海广场"]
     # 命中高德就不该再打 Nominatim
     assert all("nominatim" not in item.hostname for item in mocker.request_history)
@@ -102,13 +103,17 @@ def test_resolve_location_falls_back_to_nominatim_when_amap_unreachable(monkeypa
 
 
 def test_nominatim_fallback_is_bounded_to_dalian(monkeypatch):
-    """没有 Key 时也不能重现跨国误判：viewbox + bounded=1 必须带上。"""
+    """没有 Key 时也不能重现跨国误判：viewbox + bounded=1 必须带上。
+
+    这里刻意用一个**不在**地标词典里的地名：六个演示地标现在离线直接命中，
+    再拿它们做样本就测不到 Nominatim 的参数了。
+    """
     monkeypatch.delenv("AMAP_KEY", raising=False)
 
     with requests_mock.Mocker() as mocker:
-        mocker.get(NOMINATIM_URL, json=[{"lon": "121.6701", "lat": "38.8783"}])
+        mocker.get(NOMINATIM_URL, json=[{"lon": "121.6385", "lat": "38.9198"}])
 
-        assert resolve_location("老虎滩") == "121.6701,38.8783"
+        assert resolve_location("中山广场") == "121.6385,38.9198"
 
     request = mocker.request_history[0]
     assert request.qs["bounded"] == ["1"]
@@ -140,6 +145,90 @@ def test_amap_malformed_geocode_never_raises_unexpected(monkeypatch, body):
         mocker.get(NOMINATIM_URL, json=[{"lon": "121.5839", "lat": "38.8816"}])
 
         assert resolve_location("星海广场") == "121.5839,38.8816"
+
+
+def test_demo_landmarks_resolve_to_scenario_key_coordinates(monkeypatch):
+    """手打地名必须落到和演示卡片**同一个**坐标上。
+
+    这是实测踩到的事故：无 Key 时 Nominatim 把「大连理工大学」解析成
+    121.5199,38.8856，和兜底表 key 的 121.5197,38.8856 差 0.0002，
+    于是整条路线绕不进演示数据 —— 界面上是「这段路没有找到亮点」加 0.0 分；
+    「东港商务区」Nominatim 直接认不出，接口回 404。
+
+    断言用 `landmark()` 生成期望值，而不是把坐标抄一遍：抄一遍的话改了
+    LANDMARKS 这条测试会跟着一起「正确」，守卫就失效了。
+    """
+    monkeypatch.delenv("AMAP_KEY", raising=False)
+
+    for slug, (name, _lng, _lat) in LANDMARKS.items():
+        with requests_mock.Mocker() as mocker:
+            assert resolve_location(name) == landmark(slug), name
+            # 命中词典就不该出网 —— 省配额，也说明真的没走 Nominatim
+            assert mocker.request_history == [], name
+
+
+def test_demo_landmark_aliases_resolve_offline(monkeypatch):
+    """简称也要能用：评委不会每次都打全名。"""
+    monkeypatch.delenv("AMAP_KEY", raising=False)
+
+    for alias, slug in LANDMARK_ALIASES.items():
+        with requests_mock.Mocker() as mocker:
+            assert resolve_location(alias) == landmark(slug), alias
+            assert mocker.request_history == [], alias
+
+
+def test_unknown_place_still_falls_back_to_nominatim(monkeypatch):
+    """词典只兜六个地标，别的地名照旧走地理编码，不能被顺手截掉。"""
+    monkeypatch.delenv("AMAP_KEY", raising=False)
+
+    with requests_mock.Mocker() as mocker:
+        mocker.get(NOMINATIM_URL, json=[{"lon": "121.6271", "lat": "38.9189"}])
+
+        assert resolve_location("大连火车站") == "121.6271,38.9189"
+
+    assert any("nominatim" in item.hostname for item in mocker.request_history)
+
+
+def test_landmark_dictionary_does_not_fuzzy_match(monkeypatch):
+    """只做精确匹配：把「大连火车站」匹到「大连理工大学」比认不出更难查。"""
+    monkeypatch.delenv("AMAP_KEY", raising=False)
+
+    with requests_mock.Mocker() as mocker:
+        mocker.get(NOMINATIM_URL, json=[{"lon": "121.6271", "lat": "38.9189"}])
+
+        # 含「大连」但不是地标
+        assert resolve_location("大连火车站") != landmark("dut")
+
+
+def test_amap_wins_over_local_dictionary_when_key_present(monkeypatch):
+    """有 Key 时真实高德值优先，词典只是无 Key 的兜底，不能反过来盖住高德。"""
+    monkeypatch.setenv("AMAP_KEY", "test-key")
+
+    with requests_mock.Mocker() as mocker:
+        # 故意给一个和词典不同的 GCJ-02 值
+        mocker.get(
+            AMAP_GEOCODE_URL,
+            json={"status": "1", "geocodes": [{"location": "121.600000,38.900000"}]},
+        )
+
+        resolved = resolve_location("星海广场")
+
+    assert resolved != landmark("xinghai")
+    assert any("restapi.amap.com" in item.hostname for item in mocker.request_history)
+
+
+def test_landmark_dictionary_covers_amap_failure_without_nominatim(monkeypatch):
+    """有 Key 但高德连不上时，地标仍应离线命中，不必依赖 Nominatim。"""
+    import requests
+
+    monkeypatch.setenv("AMAP_KEY", "test-key")
+
+    with requests_mock.Mocker() as mocker:
+        mocker.get(AMAP_GEOCODE_URL, exc=requests.ConnectTimeout)
+
+        assert resolve_location("老虎滩海洋公园") == landmark("laohutan")
+
+    assert all("nominatim" not in item.hostname for item in mocker.request_history)
 
 
 def test_resolve_location_does_not_geocode_coordinates(monkeypatch):

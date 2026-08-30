@@ -71,6 +71,7 @@ async function onReplan(nextMode) {
       origin: request.origin,
       destination: request.destination,
       mode,
+      poiCount: request.poiCount || 1,
     })
     if (!result?.route) {
       replanError.value = '这次没算出可用路线，起终点没变，可以再试一次'

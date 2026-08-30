@@ -304,6 +304,68 @@ describe('ResultView', () => {
     expect(wrapper.find('.result__feedback-note').text()).toContain('没送出去')
   })
 
+  it('resets route-specific interaction state when replanning returns a new trip', async () => {
+    const api = makeApi({
+      sendFeedback: vi.fn(async () => ({ ok: true, learned: ['咖啡'] })),
+    })
+    const wrapper = mountResult({ ...RESULT, trip_id: 12 }, api)
+
+    await wrapper.findAll('.poi')[0].trigger('click')
+    await wrapper.find('.bh-btn--accent').trigger('click')
+    await wrapper.findAll('.result__feedback button')[0].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.poi')[0].classes()).toContain('poi--active')
+    expect(wrapper.find('.bh-btn--accent').text()).toContain('已收藏')
+    expect(wrapper.findAll('.result__feedback button')[0].attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('.result__feedback-note').text()).toContain('已记住')
+
+    await wrapper.setProps({
+      result: {
+        ...RESULT,
+        trip_id: 13,
+        request: { ...RESULT.request, mode: 'roam' },
+        route: { ...RESULT.route, distance: RESULT.route.distance + 80 },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.poi')[0].classes()).not.toContain('poi--active')
+    expect(wrapper.find('.bh-btn--accent').text()).toContain('收藏这条路线')
+    expect(wrapper.findAll('.result__feedback button')[0].attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('.result__feedback-note').exists()).toBe(false)
+  })
+
+  it('ignores save and feedback responses that arrive after the route changed', async () => {
+    let resolveSave
+    let resolveFeedback
+    const api = makeApi({
+      saveTrip: vi.fn(() => new Promise((resolve) => { resolveSave = resolve })),
+      sendFeedback: vi.fn(() => new Promise((resolve) => { resolveFeedback = resolve })),
+    })
+    const wrapper = mountResult({ ...RESULT, trip_id: 20 }, api)
+
+    await wrapper.find('.bh-btn--accent').trigger('click')
+    await wrapper.findAll('.result__feedback button')[0].trigger('click')
+
+    await wrapper.setProps({
+      result: {
+        ...RESULT,
+        trip_id: 21,
+        request: { ...RESULT.request, mode: '+5' },
+      },
+    })
+    await flushPromises()
+
+    resolveSave({ ok: true })
+    resolveFeedback({ ok: true, learned: ['咖啡'] })
+    await flushPromises()
+
+    expect(wrapper.find('.bh-btn--accent').text()).toContain('收藏这条路线')
+    expect(wrapper.findAll('.result__feedback button')[0].attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('.result__feedback-note').exists()).toBe(false)
+  })
+
   // R7：这两个按钮过去 emit 的是同一个 `back`，于是「重新规划」把人踢回首页。
   // 现在分成两个事件，下面两条各盯一个 —— 把 replan 改回 emit('back')
   // 会让第一条红（收不到 replan），第二条仍然绿，所以两条都得在。
@@ -348,14 +410,53 @@ describe('ResultView', () => {
       baseline_route: { polyline: '121.6068,38.9180;121.5854,38.9325', distance: 2340 },
     })
 
+    // 换成距离时 label 也要换：真机上曾印出「额外时间 +13 米」。
     const tile = wrapper
       .findAll('.tile')
-      .find((t) => t.find('.tile__label').text() === '额外时间')
+      .find((t) => t.find('.tile__label').text() === '额外路程')
 
+    expect(tile).toBeTruthy()
     expect(tile.find('.tile__number').text()).toBe('+13')
     // 单位必须跟着换，否则印出来是「+13 分钟」
     expect(tile.find('.tile__unit').text()).toBe('米')
     expect(tile.text()).toContain('不足一分钟')
+    // 这一屏不该再出现「额外时间」这个标签 —— 出现就说明有格子挂着时间的名字印米
+    expect(
+      wrapper.findAll('.tile__label').map((el) => el.text()),
+    ).not.toContain('额外时间')
+  })
+
+  it('never pairs a time label with a distance unit in the detour tile', () => {
+    // 这条不看具体文案，只看 label 和 unit 是否讲同一件事：模板里 label 写死、
+    // 只有 value/unit 跟着数据换，就会印出「额外时间 15 米」这种自相矛盾的格子。
+    // 遍历几种绕行取值，保证任何一种下配对都成立。
+    const cases = [
+      { detour_minutes: 0, distance: 2353 }, // 不足一分钟 -> 距离
+      { detour_minutes: 0, distance: 2340 }, // 增量为 0 -> 退回分钟
+      { detour_minutes: 3, distance: 2600 }, // 有真实分钟数 -> 分钟
+      { detour_minutes: 12, distance: 3400 },
+    ]
+
+    for (const { detour_minutes, distance } of cases) {
+      const wrapper = mountResult({
+        ...RESULT,
+        detour_minutes,
+        route: { ...RESULT.route, distance },
+        baseline_route: { polyline: '121.6068,38.9180;121.5854,38.9325', distance: 2340 },
+      })
+
+      const tile = wrapper
+        .findAll('.tile')
+        .find((t) => ['额外时间', '额外路程'].includes(t.find('.tile__label').text()))
+
+      expect(tile, JSON.stringify({ detour_minutes, distance })).toBeTruthy()
+
+      const label = tile.find('.tile__label').text()
+      const unit = tile.find('.tile__unit').text()
+      const expected = { 额外时间: '分钟', 额外路程: '米' }
+
+      expect(unit, `${label} 配了 ${unit}`).toBe(expected[label])
+    }
   })
 
   it('keeps minutes when the detour is a real minute or more', () => {
@@ -593,16 +694,16 @@ describe('ResultView', () => {
     expect(wrapper.text()).not.toContain('9.0')
   })
 
-  // T4：「为什么推荐这条」原来只有一句叙事，回答不了「为什么是这条」。
-  // 理由必须点名亮点、说清多花了几分钟、并把评分拆开。
-  it('explains the recommendation with pois, detour and a score breakdown', () => {
+  // T4：「为什么推荐这条」必须点名每个真实途经地，并说明绕行代价。
+  // 多途经点的总分是集合评分，不能伪装成单一地点的评分拆分。
+  it('explains a multi-waypoint recommendation without inventing a score breakdown', () => {
     const wrapper = mountResult(RESULT)
     const reasons = wrapper.findAll('.narrative__reason').map((node) => node.text())
 
     expect(reasons).toHaveLength(3)
     // 亮点要点名，而且类型取最后一段（"餐饮服务;咖啡厅" -> "咖啡厅"），
     // 和 PoiCard 上的标签一致，否则看起来像两个不同的地方
-    expect(reasons[0]).toContain('2 处亮点')
+    expect(reasons[0]).toContain('2 个真实地点')
     expect(reasons[0]).toContain('理工咖啡小铺（咖啡厅 4.4 分）')
     expect(reasons[0]).toContain('海边散步道（景点 4.6 分）')
     expect(reasons[0]).not.toContain('餐饮服务')
@@ -610,11 +711,9 @@ describe('ResultView', () => {
     expect(reasons[1]).toContain('原本 21 分钟')
     expect(reasons[1]).toContain('多花 5 分钟')
     expect(reasons[1]).toContain('15 分钟额度以内')
-    // 拆分必须和 score 自洽：3.5 + 2.1 - 1.0 = 4.6
     expect(reasons[2]).toContain('4.6 / 7')
-    expect(reasons[2]).toContain('亮点质量 3.5')
-    expect(reasons[2]).toContain('口味契合 2.1')
-    expect(reasons[2]).toContain('绕行扣 1.0')
+    expect(reasons[2]).not.toContain('亮点质量')
+    expect(reasons[2]).not.toContain('口味契合')
     // 叙事保留，但退到理由下面收尾
     expect(wrapper.find('.narrative__text').text()).toContain('从大工沿海边走')
   })

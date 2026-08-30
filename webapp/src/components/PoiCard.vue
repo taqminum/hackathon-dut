@@ -17,14 +17,18 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['focus-poi'])
+const text = (value) => String(value ?? '').trim()
 
 const color = computed(() => colorForIndex(props.index))
 const name = computed(() => props.poi?.name || '未命名地点')
 const type = computed(() => poiTypeLabel(props.poi?.type))
 const offRouteMeters = computed(() => {
-  const num = toNumber(props.poi?.off_route_meters)
+  const num = toNumber(props.poi?.baseline_offset_meters ?? props.poi?.off_route_meters)
   return num === null ? '' : formatDistance(num)
 })
+const reason = computed(() => text(props.poi?.reason))
+const introduction = computed(() => text(props.poi?.introduction))
+const cost = computed(() => text(props.poi?.cost))
 const rating = computed(() => {
   const num = toNumber(props.poi?.rating)
   if (num === null || num <= 0) return null
@@ -43,7 +47,6 @@ const expanded = ref(false)
 
 /** R6：四个扩展字段，空串一律当不存在。后端取不到时给的就是空串（见
  * `_extract_text`），不是 undefined —— 两种都要挡住，桩数据里也可能直接省掉键。 */
-const text = (value) => String(value ?? '').trim()
 const address = computed(() => text(props.poi?.address))
 const tel = computed(() => text(props.poi?.tel))
 const opentime = computed(() => text(props.poi?.opentime))
@@ -56,6 +59,7 @@ const details = computed(() =>
     { key: 'address', label: '地址', value: address.value },
     { key: 'tel', label: '电话', value: tel.value },
     { key: 'opentime', label: '营业时间', value: opentime.value },
+    { key: 'cost', label: '参考消费', value: cost.value ? `¥${cost.value}` : '' },
   ].filter((row) => row.value),
 )
 
@@ -85,10 +89,15 @@ function activate() {
     <div class="poi__body">
       <h4 class="poi__name">{{ name }}</h4>
       <div class="poi__meta">
-        <span class="poi__route-kind">{{ index === 0 ? '途经' : '附近' }}</span>
+        <span class="poi__route-kind">
+          {{ poi.is_waypoint === false ? '附近' : `第 ${poi.visit_order || index + 1} 站` }}
+        </span>
         <span v-if="type" class="poi__tag">{{ type }}</span>
-        <span v-if="offRouteMeters" class="bh-mono poi__distance">距路线约 {{ offRouteMeters }}</span>
+        <span v-if="offRouteMeters" class="bh-mono poi__distance">偏离原路线约 {{ offRouteMeters }}</span>
       </div>
+
+      <p v-if="introduction" class="poi__intro">{{ introduction }}</p>
+      <p v-if="reason" class="poi__reason">{{ reason }}</p>
 
       <div v-if="rating" class="poi__rating">
         <span class="poi__stars" aria-hidden="true">
@@ -228,6 +237,18 @@ function activate() {
   display: flex;
   align-items: center;
   gap: var(--bh-2);
+}
+
+.poi__intro,
+.poi__reason {
+  font-size: var(--bh-text-sm);
+  color: var(--bh-ink-soft);
+}
+
+.poi__reason {
+  padding-left: var(--bh-2);
+  border-left: 4px solid var(--bh-blue);
+  color: var(--bh-ink);
 }
 
 .poi__stars {

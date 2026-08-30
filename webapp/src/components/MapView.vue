@@ -113,6 +113,7 @@ const hasBaselineComparison = computed(
     decodeRoutePolyline(props.baselineRoute?.polyline).length > 0 &&
     props.baselineRoute?.polyline !== props.route?.polyline,
 )
+const hasNearbyPois = computed(() => props.pois.some((poi) => poi?.is_waypoint === false))
 
 function renderRouteAndPois() {
   if (!map) return
@@ -181,6 +182,7 @@ function renderRouteAndPois() {
     if (!latlng) return
 
     const isActive = index === props.activePoiIndex
+    const isWaypoint = poi?.is_waypoint !== false
     if (isActive) activeLatLng = latlng
     const popup = `<b>${escapeHtml(poi.name)}</b><br>${escapeHtml(poi.type)}`
     addMarker(
@@ -188,10 +190,10 @@ function renderRouteAndPois() {
       {
         icon: iconFor(
           isActive
-            ? index === 0
+            ? isWaypoint
               ? 'waypoint-active'
               : 'poi-active'
-            : index === 0
+            : isWaypoint
               ? 'waypoint'
               : 'poi',
           String(index + 1),
@@ -298,7 +300,7 @@ onBeforeUnmount(() => {
       </span>
       <span class="map__legend-item"><i class="map__key map__key--start" />起点 / 终点</span>
       <span class="map__legend-item"><i class="map__key map__key--waypoint" />途经点</span>
-      <span class="map__legend-item"><i class="map__key map__key--poi" />附近亮点</span>
+      <span v-if="hasNearbyPois" class="map__legend-item"><i class="map__key map__key--poi" />附近亮点</span>
     </div>
   </div>
 </template>

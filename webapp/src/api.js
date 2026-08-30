@@ -15,7 +15,7 @@
  */
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
-const DEFAULT_TIMEOUT = 20000
+const DEFAULT_TIMEOUT = 60000
 
 function base() {
   return API_BASE.replace(/\/$/, '')
@@ -88,13 +88,13 @@ async function withFallback(promiseFactory, fallbackValue) {
 /**
  * 推荐路线。core 接口，失败必须抛出，让界面显示错误态。
  */
-export async function recommendRoute({ origin, destination, mode }, client = globalThis.fetch) {
+export async function recommendRoute({ origin, destination, mode, poiCount = 1 }, client = globalThis.fetch) {
   let response
   try {
     response = await withTimeout(client, buildUrl('/route/recommend'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin, destination, mode }),
+      body: JSON.stringify({ origin, destination, mode, poi_count: poiCount }),
     })
   } catch (error) {
     // 只包传输层失败。`parse` 在这个 try 之外，后端的中文 detail 不会经过这里。
@@ -114,32 +114,37 @@ export async function checkHealth(client = globalThis.fetch) {
       5000,
     )
     const data = await parse(response, '健康检查失败')
-    return { online: data?.status === 'ok', detail: data }
+    return { online: data?.status === 'ok' && data?.ready !== false, detail: data }
   }, { online: false, detail: null })
 }
 
 /** 地点联想。后端未定稿，失败返回空数组，输入框退化为纯文本输入 */
-export async function suggestPlaces({ keyword, city = '大连' }, client = globalThis.fetch) {
+export async function suggestPlaces({ keyword, city = '' }, client = globalThis.fetch) {
   if (!keyword || !keyword.trim()) return []
 
-  return withFallback(async () => {
-    const query = new URLSearchParams({ keyword: keyword.trim(), city })
-    const response = await withTimeout(
+  const query = new URLSearchParams({ keyword: keyword.trim() })
+  if (city) query.set('city', city)
+  let response
+  try {
+    response = await withTimeout(
       client,
       `${buildUrl('/place/suggest')}?${query.toString()}`,
       { method: 'GET' },
-      6000,
+      8000,
     )
-    const data = await parse(response, '地点联想失败')
-    const list = Array.isArray(data) ? data : data?.suggestions || data?.tips || []
-    return list
-      .map((item) => ({
-        name: item.name || item.title || '',
-        address: item.address || item.district || '',
-        location: item.location || item.coord || '',
-      }))
-      .filter((item) => item.name)
-  }, [])
+  } catch (error) {
+    throw humanizeTransportError(error, '地点联想失败')
+  }
+  const data = await parse(response, '地点联想失败')
+  const list = Array.isArray(data) ? data : data?.suggestions || data?.tips || []
+  return list
+    .map((item) => ({
+      id: item.id || '',
+      name: item.name || item.title || '',
+      address: item.address || item.district || '',
+      location: item.location || item.coord || '',
+    }))
+    .filter((item) => item.name)
 }
 
 /** 收藏当前路线。后端未定稿，失败返回 { ok: false } 让界面提示稍后重试 */

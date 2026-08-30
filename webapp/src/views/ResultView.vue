@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import MapView from '../components/MapView.vue'
 import StatTile from '../components/StatTile.vue'
 import ScoreMeter from '../components/ScoreMeter.vue'
@@ -43,6 +43,26 @@ const feedbackState = ref('')
 const feedbackNote = ref('')
 const stepsExpanded = ref(false)
 
+// 收藏、反馈、POI 高亮和步骤展开都只属于当前这一次推荐。结果页原地切换
+// 探索模式时组件不会重挂，若不主动清空，上一条路线的「已收藏 / 还不错」
+// 会原样带到新 trip 上。两个 attempt 计数还负责废弃旧路线尚未返回的异步请求，
+// 避免它们晚到后又把已经清空的状态写回来。
+let saveAttempt = 0
+let feedbackAttempt = 0
+
+watch(
+  () => props.result,
+  () => {
+    saveAttempt += 1
+    feedbackAttempt += 1
+    activePoiIndex.value = -1
+    saveState.value = ''
+    feedbackState.value = ''
+    feedbackNote.value = ''
+    stepsExpanded.value = false
+  },
+)
+
 const route = computed(() => props.result?.route ?? null)
 // P3-4：基准路线。老后端不返回这个字段时为 null，MapView 只画推荐那一条。
 const baselineRoute = computed(() => props.result?.baseline_route ?? null)
@@ -83,18 +103,26 @@ const detourDistanceMeters = computed(() => {
   return delta > 0 ? delta : null
 })
 
-/** 绕行为 0 且能算出距离增量时，格子改用距离。两个值必须一起换 ——
- * 只换数字不换单位就会印出「+13 分钟」。 */
+/** 绕行为 0 且能算出距离增量时，格子改用距离。value / unit / **label** 三个
+ * 必须一起换。
+ *
+ * 上一版只换了 value 和 unit，label 留着模板里写死的「额外时间」，于是真机上
+ * 印出「额外时间 +15 米」—— 把米挂在时间的标签下面，比显示 `+0 分钟` 更糟：
+ * `+0` 只是没信息量，「额外时间 15 米」是自相矛盾，评委一眼就会问这是什么单位。
+ * 所以 label 由这里一起给出，模板不再写死。
+ */
 const detourTile = computed(() => {
   const showDistance = detourMinutes.value === '0' && detourDistanceMeters.value !== null
   if (!showDistance) {
     return {
+      label: '额外时间',
       value: detourMinutes.value,
       unit: '分钟',
       hint: detourMinutes.value === '0' ? '几乎不耽误，顺路就到' : '为探索多花的时间',
     }
   }
   return {
+    label: '额外路程',
     value: `+${detourDistanceMeters.value}`,
     unit: '米',
     hint: '不足一分钟，按多走的距离算',
@@ -127,6 +155,7 @@ const exploreModes = EXPLORE_MODES
 const scoreBreakdown = computed(() => {
   const total = toNumber(props.result?.score)
   if (total === null || total <= 0) return null
+  if (pois.value.length !== 1) return null
 
   const rating = toNumber(pois.value[0]?.rating)
   const detour = toNumber(props.result?.detour_minutes)
@@ -177,7 +206,7 @@ const reasons = computed(() => {
 
   const list = []
   const named = pois.value.slice(0, 3).map(describePoi).join('、')
-  list.push(`沿途多了 ${pois.value.length} 处亮点：${named}`)
+  list.push(`路线会按顺序经过 ${pois.value.length} 个真实地点：${named}`)
 
   const detour = toNumber(props.result?.detour_minutes)
   if (detour !== null) {
@@ -308,6 +337,7 @@ function focusPoi(index) {
 
 /** 收藏当前路线。接口未定稿，失败只提示，不阻塞 */
 async function save() {
+  const attempt = ++saveAttempt
   saveState.value = 'saving'
   const response = await api.saveTrip({
     origin: request.value?.origin ?? route.value?.origin ?? '',
@@ -320,6 +350,7 @@ async function save() {
     pois: pois.value,
     route: route.value,
   })
+  if (attempt !== saveAttempt) return
   saveState.value = response?.ok ? 'saved' : 'failed'
 }
 
@@ -334,6 +365,7 @@ async function save() {
  * 选中态（按钮变色）只表示「你选的是这个」，是不是学到了由下面那行文字说。
  */
 async function feedback(liked) {
+  const attempt = ++feedbackAttempt
   feedbackState.value = liked ? 'liked' : 'disliked'
   feedbackNote.value = '提交中…'
   const response = await api.sendFeedback({
@@ -341,6 +373,8 @@ async function feedback(liked) {
     liked,
     mode: request.value?.mode ?? modeInfo.value.value,
   })
+
+  if (attempt !== feedbackAttempt) return
 
   if (!response?.ok) {
     feedbackNote.value = '反馈没送出去，稍后可以再点一次'
@@ -388,7 +422,8 @@ const saveLabel = computed(() => {
               <span class="result__to" :class="{ 'bh-mono': !destinationLabel }">{{ destinationText }}</span>
             </h1>
             <p class="result__mode">
-              模式 <strong>{{ modeInfo.label }}</strong> · {{ modeInfo.title }}
+              模式 <strong>{{ modeInfo.label }}</strong> · {{ modeInfo.title }} · 途经
+              <strong>{{ pois.length }}</strong> 站
             </p>
           </div>
           <!-- R7：这里只放「重新规划」—— 它用当前起终点和模式原地重算，留在结果页。
@@ -463,8 +498,10 @@ const saveLabel = computed(() => {
             color="ink"
             hint="最快路线预计用时"
           />
+          <!-- label 跟着 value/unit 一起走：绕行不足一分钟时整格换成「额外路程 +15 米」，
+               不能只换数字留下「额外时间 +15 米」这种单位对不上的组合。 -->
           <StatTile
-            label="额外时间"
+            :label="detourTile.label"
             :value="detourTile.value"
             :unit="detourTile.unit"
             color="red"
@@ -507,8 +544,8 @@ const saveLabel = computed(() => {
 
         <section class="result__pois">
           <div class="result__section-head">
-            <h2 class="result__section-title">沿途亮点</h2>
-            <span class="bh-mono result__section-count">{{ pois.length }} 处</span>
+            <h2 class="result__section-title">真实途经地点</h2>
+            <span class="bh-mono result__section-count">{{ pois.length }} 站</span>
           </div>
 
           <div v-if="pois.length" class="result__poi-list">

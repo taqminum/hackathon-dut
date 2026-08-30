@@ -113,6 +113,51 @@ def get_candidate_routes(origin: str, destination: str, mode: str, waypoint: str
     return [_build_fallback_route(origin, destination, mode, waypoint)]
 
 
+def get_route_via_waypoints(
+    origin: str,
+    destination: str,
+    waypoints: list[str] | tuple[str, ...],
+) -> dict | None:
+    """用真实高德步行路网依次经过多个途经点。
+
+    v3 步行接口没有途经点参数，因此把 ``A -> P1 -> ... -> B`` 拆成多段请求，
+    再把距离、时长、指引和折线无损拼接。这个函数绝不降级到几何估算：调用方用它
+    生成正式推荐，任一段拿不到真实高德结果时整条候选作废。
+    """
+    if not os.getenv("AMAP_KEY"):
+        return None
+
+    stops = [origin, *[point for point in waypoints if point], destination]
+    if len(stops) < 2:
+        return None
+
+    legs: list[dict] = []
+    for start, end in zip(stops, stops[1:]):
+        leg = _walk_leg(start, end)
+        if not leg or leg.get("source") != SOURCE_AMAP:
+            return None
+        legs.append(leg)
+
+    if not legs:
+        return None
+
+    polyline = ""
+    for leg in legs:
+        polyline = _concat_polylines(polyline, leg.get("polyline", ""))
+
+    return {
+        "source": SOURCE_AMAP,
+        "origin": origin,
+        "destination": destination,
+        "demo_mode": False,
+        "distance": sum(int(leg["distance"]) for leg in legs),
+        "duration": sum(int(leg["duration"]) for leg in legs),
+        "steps": [step for leg in legs for step in leg.get("steps", [])],
+        "polyline": polyline,
+        "waypoint_count": len(stops) - 2,
+    }
+
+
 def _to_amap_coord(coord: str | None) -> str | None:
     """WGS-84 -> GCJ-02。转不动就原样返回，让高德自己报错，不要静默丢坐标。"""
     if not coord:
@@ -569,6 +614,44 @@ def point_to_route_meters(point: str | None, polyline: str | None) -> float | No
     )
 
 
+def point_to_route_progress(point: str | None, polyline: str | None) -> float | None:
+    """返回点在路线上的最近投影进度，范围 ``[0, 1]``。
+
+    多途经点必须按基准路线的前后顺序访问，否则同一批好地点会被拼成来回折返的路线。
+    这里同时考虑每段真实长度和点在线段上的投影比例，不能只找最近顶点。
+    """
+    try:
+        target = _parse_lng_lat(point)
+    except (ValueError, AttributeError):
+        return None
+
+    points = _parse_polyline(polyline)
+    if len(points) < 2:
+        return None
+
+    spans = [_haversine_meters(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    total = sum(spans)
+    if total <= 0:
+        return None
+
+    best_distance = float("inf")
+    best_progress = 0.0
+    walked = 0.0
+    for index, span in enumerate(spans):
+        start, end = points[index], points[index + 1]
+        ratio = _point_projection_ratio(target, start, end)
+        nearest = (
+            start[0] + (end[0] - start[0]) * ratio,
+            start[1] + (end[1] - start[1]) * ratio,
+        )
+        distance = _haversine_meters(target, nearest)
+        if distance < best_distance:
+            best_distance = distance
+            best_progress = (walked + span * ratio) / total
+        walked += span
+    return max(0.0, min(1.0, best_progress))
+
+
 def _point_to_segment_meters(
     point: tuple[float, float],
     start: tuple[float, float],
@@ -579,6 +662,17 @@ def _point_to_segment_meters(
     只投影不换算会让经度差被高估（大连一带 1 度经度约是 1 度纬度的 0.78 倍），
     选错线段就又画出折返线。
     """
+    ratio = _point_projection_ratio(point, start, end)
+    nearest = (start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio)
+    return _haversine_meters(point, nearest)
+
+
+def _point_projection_ratio(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    """局部平面中点在线段上的投影比例，端点外的结果钳到 ``[0, 1]``。"""
     scale = cos(radians((start[1] + end[1]) / 2))
     ax, ay = start[0] * scale, start[1]
     bx, by = end[0] * scale, end[1]
@@ -587,11 +681,9 @@ def _point_to_segment_meters(
     dx, dy = bx - ax, by - ay
     denominator = dx * dx + dy * dy
     if denominator == 0:
-        return _haversine_meters(point, start)
+        return 0.0
 
-    ratio = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / denominator))
-    nearest = (start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio)
-    return _haversine_meters(point, nearest)
+    return max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / denominator))
 
 
 def _parse_lng_lat(coord: str | None) -> tuple[float, float]:

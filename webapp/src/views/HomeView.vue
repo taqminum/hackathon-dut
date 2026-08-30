@@ -40,6 +40,12 @@ const destinationCoord = ref('')
 // 不能被标签污染 —— 那两个字段有坐标不变量，smoke 也钉着它们。
 const originLabel = ref('')
 const destinationLabel = ref('')
+const poiCount = ref(1)
+const POI_COUNTS = [
+  { value: 1, label: '绕 1 个地方', caption: '重点停一站' },
+  { value: 2, label: '绕 2 个地方', caption: '一条线串两站' },
+  { value: 3, label: '绕 3 个地方', caption: '完整探索路线' },
+]
 const loading = ref(false)
 const error = ref('')
 const touched = ref(false)
@@ -126,6 +132,7 @@ async function handleSubmit(modeOverride) {
       origin: (originCoord.value || origin.value).trim(),
       destination: (destinationCoord.value || destination.value).trim(),
       mode: override || mode.value,
+      poiCount: poiCount.value,
       // T1：只用于显示。后端不认这两个字段（Body(..., embed=True) 逐字段取值，
       // 多余的键会被忽略），所以带上它们不会破坏请求。
       originLabel: originLabel.value.trim(),
@@ -138,6 +145,7 @@ async function handleSubmit(modeOverride) {
       origin: payload.origin,
       destination: payload.destination,
       mode: payload.mode,
+      poiCount: payload.poiCount,
     })
 
     if (!result?.route) {
@@ -191,6 +199,7 @@ function applyScenario(scenario) {
 }
 
 function applyHistory(item) {
+  poiCount.value = Number(item.poiCount) || 1
   return fillDemo(item.origin, item.destination, item.mode || mode.value, {
     origin: item.originLabel,
     destination: item.destinationLabel,
@@ -269,6 +278,21 @@ defineExpose({ handleSubmit, fillDemo })
         </div>
 
         <ExploreModeSelector v-model="mode" :disabled="loading" />
+
+        <fieldset class="home__stop-count">
+          <legend class="bh-label">这次想绕几个地方</legend>
+          <div class="home__stop-options">
+            <label
+              v-for="option in POI_COUNTS"
+              :key="option.value"
+              :class="['home__stop-option', { 'home__stop-option--active': poiCount === option.value }]"
+            >
+              <input v-model="poiCount" type="radio" :value="option.value" :disabled="loading" />
+              <strong>{{ option.label }}</strong>
+              <span>{{ option.caption }}</span>
+            </label>
+          </div>
+        </fieldset>
 
         <button type="submit" class="bh-btn bh-btn--primary bh-btn--lg bh-btn--block" :disabled="!canSubmit">
           {{ loading ? '正在规划…' : '生成偶遇路线' }}
@@ -435,6 +459,51 @@ defineExpose({ handleSubmit, fillDemo })
   box-shadow: none;
 }
 
+.home__stop-count {
+  display: grid;
+  gap: var(--bh-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.home__stop-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--bh-3);
+}
+
+.home__stop-option {
+  display: grid;
+  gap: var(--bh-1);
+  padding: var(--bh-3);
+  border: var(--bh-line) solid var(--bh-ink);
+  background: var(--bh-white);
+  cursor: pointer;
+}
+
+.home__stop-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.home__stop-option strong {
+  font-size: var(--bh-text-sm);
+}
+
+.home__stop-option span {
+  font-size: var(--bh-text-xs);
+  color: var(--bh-ink-soft);
+}
+
+.home__stop-option--active {
+  transform: translate(-2px, -2px);
+  background: var(--bh-yellow);
+  box-shadow: var(--bh-shadow-sm);
+}
+
 /* ---------- 分区 ---------- */
 
 .home__section {
@@ -572,6 +641,9 @@ defineExpose({ handleSubmit, fillDemo })
     margin-top: 0;
     justify-self: end;
   }
+
+  .home__stop-options {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
-

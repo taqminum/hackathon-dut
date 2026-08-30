@@ -34,7 +34,13 @@ app.include_router(api.router, prefix="/api")
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    amap_configured = bool(os.getenv("AMAP_KEY"))
+    return {
+        "status": "ok",
+        "ready": amap_configured,
+        "data_source": "amap",
+        "amap_configured": amap_configured,
+    }
 
 
 def _safe_static_file(relative_path: str) -> str | None:

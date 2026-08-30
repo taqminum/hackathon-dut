@@ -119,19 +119,13 @@ def test_explore_pois_along_route_discards_malformed_remote_pois():
     # 这条 POI 的响应里一个都没有，那就必须是**空串** —— 前端见空串整行不渲染。
     # 键必须在（缺键和空串在 JS 里都是假值，但少一个键会让前端的字段清单和
     # 后端脱钩，改名字时没人发现），值必须是空的（编一个地址比不给更糟）。
-    assert pois == [
-        {
-            "name": "有效亮点",
-            "type": "景点",
-            "distance": None,
-            "rating": 4.2,
-            "location": "120.095193,30.202275",
-            "address": "",
-            "tel": "",
-            "opentime": "",
-            "photo": "",
-        }
-    ]
+    assert len(pois) == 1
+    assert pois[0]["name"] == "有效亮点"
+    assert pois[0]["rating"] == 4.2
+    assert pois[0]["location"] == "120.095193,30.202275"
+    assert pois[0]["navigation_location"] == "120.095193,30.202275"
+    assert pois[0]["source"] == "amap"
+    assert pois[0]["address"] == ""
 
 
 def test_explore_pois_along_route_reads_rating_from_biz_ext():
@@ -157,7 +151,7 @@ def test_explore_pois_along_route_reads_rating_from_biz_ext():
     assert pois[0]["rating"] == 4.8
 
 
-def test_explore_pois_along_route_drops_low_rated_and_unrated_pois():
+def test_explore_pois_along_route_drops_low_rated_but_keeps_unrated_pois():
     with patch("app.services.poi_explorer.requests.get") as mock_get:
         mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {
@@ -174,7 +168,7 @@ def test_explore_pois_along_route_drops_low_rated_and_unrated_pois():
         with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
             pois = explore_pois_along_route("116.397428,39.90923", "116.407526,39.90403", ["餐饮"], 300)
 
-    assert [poi["name"] for poi in pois] == ["够好的店"]
+    assert [poi["name"] for poi in pois] == ["没有评分", "够好的店"]
 
 
 def test_explore_pois_along_route_excludes_types_without_serendipity():

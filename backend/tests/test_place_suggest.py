@@ -11,12 +11,12 @@ import requests_mock
 INPUTTIPS_URL = "https://restapi.amap.com/v3/assistant/inputtips"
 
 
-def test_suggest_returns_empty_without_amap_key(client):
+def test_suggest_reports_unavailable_without_amap_key(client):
     # conftest 的 autouse fixture 已清掉 AMAP_KEY
     response = client.get("/api/place/suggest", params={"keyword": "星海"})
 
-    assert response.status_code == 200
-    assert response.json() == {"suggestions": []}
+    assert response.status_code == 503
+    assert "未配置" in response.json()["detail"]
 
 
 def test_suggest_normalizes_tips_to_wgs84(client, monkeypatch):
@@ -89,26 +89,26 @@ def test_suggest_survives_tips_without_coordinates(client, monkeypatch):
     assert suggestions[1]["location"] != ""
 
 
-def test_suggest_degrades_to_empty_when_amap_fails(client, monkeypatch):
+def test_suggest_reports_amap_failure(client, monkeypatch):
     monkeypatch.setenv("AMAP_KEY", "test-key")
 
     with requests_mock.Mocker() as mocker:
         mocker.get(INPUTTIPS_URL, exc=requests.exceptions.ConnectTimeout)
         response = client.get("/api/place/suggest", params={"keyword": "星海"})
 
-    assert response.status_code == 200
-    assert response.json() == {"suggestions": []}
+    assert response.status_code == 502
+    assert "高德地点联想失败" in response.json()["detail"]
 
 
-def test_suggest_degrades_on_malformed_payload(client, monkeypatch):
+def test_suggest_reports_malformed_payload(client, monkeypatch):
     monkeypatch.setenv("AMAP_KEY", "test-key")
 
     with requests_mock.Mocker() as mocker:
         mocker.get(INPUTTIPS_URL, text="not json at all")
         response = client.get("/api/place/suggest", params={"keyword": "星海"})
 
-    assert response.status_code == 200
-    assert response.json() == {"suggestions": []}
+    assert response.status_code == 502
+    assert "高德地点联想失败" in response.json()["detail"]
 
 
 def test_suggest_rejects_empty_keyword(client):

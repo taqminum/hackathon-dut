@@ -80,14 +80,14 @@ describe('App', () => {
 
       const wrapper = mount(App, { global: { provide: { [API_KEY]: api } } })
       await flushPromises()
-      expect(wrapper.text()).toContain('后端已连接')
+      expect(wrapper.text()).toContain('高德真实数据已连接')
 
       healthy = false
       await vi.advanceTimersByTimeAsync(16000)
       await flushPromises()
 
       expect(api.checkHealth.mock.calls.length).toBeGreaterThan(1)
-      expect(wrapper.text()).toContain('后端未连接')
+      expect(wrapper.text()).toContain('真实数据未就绪')
 
       // 卸载后不能再查 —— 定时器泄漏会在测试里刷出无穷请求
       const callsAtUnmount = api.checkHealth.mock.calls.length
@@ -131,6 +131,7 @@ describe('App', () => {
       origin: scenario.origin,
       destination: scenario.destination,
       mode: scenario.mode,
+      poiCount: 1,
     })
 
     const title = wrapper.find('.result__title')
@@ -191,6 +192,7 @@ describe('App', () => {
       origin: scenario.origin,
       destination: scenario.destination,
       mode: scenario.mode,
+      poiCount: 1,
     })
 
     // 没回首页
@@ -247,6 +249,7 @@ describe('App', () => {
       origin: scenario.origin,
       destination: scenario.destination,
       mode: 'roam',
+      poiCount: 1,
     })
     // 留在结果页，标题地名没被第二次响应冲掉
     expect(wrapper.findComponent(HomeView).exists()).toBe(false)

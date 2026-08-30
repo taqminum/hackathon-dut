@@ -1,9 +1,18 @@
 /**
  * 冒烟脚本：用真实浏览器跑一遍首页 -> 结果页，并截图。
- * 需要先启动 mock 后端与 vite：
- *   node tests/mock-server.mjs 8000
+ * 需要先启动后端与 vite：
+ *   node tests/mock-server.mjs 8000      # 桩（断言全绿的那一套）
  *   npx vite --port 5173
  * 用法： node tests/smoke.mjs [baseUrl] [outDir]
+ *
+ * 也能对着**真后端**跑（`uvicorn app.main:app --port 8000`）。这时有一批断言
+ * 钉的是桩的固定数据（麦当劳 5 家门店、「理工咖啡小铺」、2.2/2.6 公里……），
+ * 真后端没有 AMAP_KEY 时给不出来。这类检查记 SKIP 而不是 FAIL，更不能像以前
+ * 那样直接抛 TimeoutError 把整轮打断 —— 一崩就看不到后面几十条真实断言，
+ * 「对着真后端跑一遍」这件事等于做不了。
+ *
+ * 所以本文件里所有可能因数据缺失而抛的等待/取值都走下面的 `waitFor` /
+ * `textOf`：它们返回布尔或空串，判断权交给调用处。
  */
 import { chromium } from 'playwright'
 import { mkdir } from 'node:fs/promises'
@@ -12,6 +21,7 @@ const BASE = process.argv[2] || 'http://localhost:5173'
 const OUT = process.argv[3] || '/tmp/shots'
 
 const problems = []
+const skipped = []
 
 function check(label, condition, detail = '') {
   if (condition) {
@@ -19,6 +29,32 @@ function check(label, condition, detail = '') {
   } else {
     console.log(`  FAIL ${label}${detail ? ` — ${detail}` : ''}`)
     problems.push(label)
+  }
+}
+
+/** 数据前提不成立时用这个：不算失败，但必须印出来，否则「全部通过」会骗人。 */
+function skip(label, why = '') {
+  console.log(`  skip ${label}${why ? ` — ${why}` : ''}`)
+  skipped.push(label)
+}
+
+/** 等元素出现，超时返回 false 而不是抛。 */
+async function waitFor(page, selector, timeout = 5000) {
+  try {
+    await page.waitForSelector(selector, { timeout })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 取文本，元素不存在时返回空串 —— 让断言去判空，而不是让脚本崩掉。 */
+async function textOf(locator) {
+  try {
+    if ((await locator.count()) === 0) return ''
+    return await locator.first().innerText()
+  } catch {
+    return ''
   }
 }
 
@@ -76,27 +112,46 @@ try {
     check('下拉层级高于 Leaflet 控件且低于头部', zLayers.dropdownToken > 800 && zLayers.dropdownToken < zLayers.overlayToken, `dropdown=${zLayers.dropdownToken} overlay=${zLayers.overlayToken}`)
 
     // R3：一个关键词返回多家门店时必须能选。桩里「麦当劳」有 5 家。
+    //
+    // 真后端没有 AMAP_KEY 时 /api/place/suggest 回空列表，「麦当劳」也不在本地
+    // 地标词典里 —— 于是一条候选都不会有。这不是缺陷（空态提示才是那时的正确
+    // 表现），所以这里改成「有候选就验多选，没候选就验空态并 SKIP 多选」。
+    // 以前这行直接 waitForSelector('.place__option') 抛 TimeoutError，
+    // 整个脚本在第 8 条断言上崩掉，后面几十条真实检查一条都跑不到。
     await page.locator('input').first().fill('麦当劳')
-    await page.waitForSelector('.place__option', { timeout: 5000 })
-    const optionCount = await page.locator('.place__option').count()
-    check('连锁店关键词给出多个候选', optionCount >= 3, `${optionCount} 条`)
-    const optionNames = await page.locator('.place__option-name').allInnerTexts()
-    check('候选门店互不相同', new Set(optionNames).size === optionNames.length, optionNames.join(' | '))
-    check('候选带地址或坐标以便区分', (await page.locator('.place__option-address').count()) >= 3)
-    await page.screenshot({ path: `${OUT}/${viewport.name}-suggest.png` })
+    const hasSuggestions = await waitFor(page, '.place__option', 5000)
 
-    // 选第二个 —— 选完输入框里是门店名，坐标进隐藏状态（和 R2 一个机制）
-    const pickedName = (await page.locator('.place__option-name').nth(1).innerText()).trim()
-    await page.locator('.place__option').nth(1).click()
-    await page.waitForTimeout(200)
-    const pickedValue = await page.locator('input').first().inputValue()
-    check('点候选后输入框填入门店名', pickedValue === pickedName, `${pickedValue} vs ${pickedName}`)
-    check('选完候选列表收起', (await page.locator('.place__option').count()) === 0)
+    if (hasSuggestions) {
+      const optionCount = await page.locator('.place__option').count()
+      check('连锁店关键词给出多个候选', optionCount >= 3, `${optionCount} 条`)
+      const optionNames = await page.locator('.place__option-name').allInnerTexts()
+      check('候选门店互不相同', new Set(optionNames).size === optionNames.length, optionNames.join(' | '))
+      check('候选带地址或坐标以便区分', (await page.locator('.place__option-address').count()) >= 3)
+      await page.screenshot({ path: `${OUT}/${viewport.name}-suggest.png` })
+
+      // 选第二个 —— 选完输入框里是门店名，坐标进隐藏状态（和 R2 一个机制）
+      const pickedName = (await textOf(page.locator('.place__option-name').nth(1))).trim()
+      await page.locator('.place__option').nth(1).click()
+      await page.waitForTimeout(200)
+      const pickedValue = await page.locator('input').first().inputValue()
+      check('点候选后输入框填入门店名', pickedValue === pickedName, `${pickedValue} vs ${pickedName}`)
+      check('选完候选列表收起', (await page.locator('.place__option').count()) === 0)
+    } else {
+      skip('连锁店关键词给出多个候选', '联想返回空（真后端无 AMAP_KEY）')
+      skip('点候选后输入框填入门店名', '没有候选可点')
+      // 但这时**必须**有可读的空态提示，不能是一个什么都不显示的输入框。
+      check('联想为空时仍给出空态提示', await waitFor(page, '.place__empty', 3000))
+      await page.screenshot({ path: `${OUT}/${viewport.name}-suggest.png` })
+    }
 
     // 无匹配时给可读提示，而且这条提示不是一个能点的假选项
     await page.locator('input').first().fill('这个地方根本不存在xyz')
-    await page.waitForSelector('.place__empty', { timeout: 5000 })
-    check('联想无结果时给出中文提示', (await page.locator('.place__empty').innerText()).includes('可直接输入地名或坐标'))
+    check('联想无结果时出现空态提示', await waitFor(page, '.place__empty', 5000))
+    check(
+      '联想无结果时给出中文提示',
+      (await textOf(page.locator('.place__empty'))).includes('可直接输入地名或坐标'),
+      await textOf(page.locator('.place__empty')),
+    )
     check('空态提示不混进 listbox 选项', (await page.locator('.place__option').count()) === 0)
     check('空态提示不可点选', (await page.locator('.place__empty[role="status"]').count()) === 1)
 
@@ -105,7 +160,19 @@ try {
 
     // 走演示场景：大工 -> 星海广场（+15）
     await page.locator('.demo').first().click()
-    await page.waitForSelector('.result__title', { timeout: 10000 })
+    const gotResult = await waitFor(page, '.result__title', 20000)
+    if (!gotResult) {
+      // 请求挂了就没有后面任何东西可量。把接口报的话印出来 —— 这比一屏
+      // TimeoutError 堆栈有用得多。
+      check(
+        '演示场景能出结果页',
+        false,
+        (await textOf(page.locator('[role="alert"]'))) || '既没有结果页也没有错误提示',
+      )
+      await page.screenshot({ path: `${OUT}/${viewport.name}-no-result.png`, fullPage: true })
+      await page.close()
+      continue
+    }
 
     // T1：标题必须是地名。以前 applyScenario 把 DEMO_SCENARIOS 的
     // originLabel/destinationLabel 丢了，标题直接印「121.5197,38.8856」，
@@ -115,9 +182,17 @@ try {
     check('标题里没有经纬度', !/121\.5197|38\.8856/.test(titleText), titleText)
 
     check('结果页显示基准时长', (await page.getByText('基准时长').count()) > 0)
-    check('结果页显示额外时间', (await page.getByText('额外时间').count()) > 0)
-    check('叙事文案渲染', await page.getByText('从大工沿海边走').first().isVisible())
-    check('沿途亮点卡片渲染', (await page.locator('.poi').count()) === 2)
+    // 绕行不足一分钟时这一格换成「额外路程 + 米」（真后端的兜底数据就是这种），
+    // 所以两个 label 认一个就行 —— 但必须**只**出现一个，单位对不上的组合
+    // 由 tests/ResultView.test.js 那条配对断言守着。
+    const detourLabels = await page.locator('.tile__label').allInnerTexts()
+    const detourShown = detourLabels.filter((t) => ['额外时间', '额外路程'].includes(t.trim()))
+    check('结果页显示绕行代价格（时间或路程）', detourShown.length === 1, detourLabels.join(' | '))
+    check('叙事文案渲染', (await textOf(page.locator('.narrative'))).length > 0)
+    // 真后端在没有 AMAP_KEY 时靠兜底数据，POI 条数由 dalian 场景表决定；
+    // 桩固定给 2 条。这里只要求「至少有一条亮点」，条数细节归 vitest 管。
+    const poiCount = await page.locator('.poi').count()
+    check('沿途亮点卡片渲染', poiCount > 0, `${poiCount} 张`)
     check('路线指引渲染', (await page.locator('.steps__item').count()) > 0)
     // R9：徽标判据从 demo_mode 换成 route.source === 'fallback'。桩的场景
     // 路线带 source: 'fallback'，所以这里必须有；amap 分支的负向断言在
@@ -195,15 +270,25 @@ try {
     // T2「地图和路线是死的」：底图必须真的出图。瓦片是外网资源，这里给足时间，
     // 拿不到就明确说是网络问题 —— 但那时界面上必须有「底图暂时下不来」的提示，
     // 而不是一块和加载中长得一样的灰。
-    let tiles = 0
-    for (let i = 0; i < 20 && tiles === 0; i += 1) {
-      tiles = await page.locator('.leaflet-tile-pane img').count()
-      if (tiles === 0) await page.waitForTimeout(500)
+    //
+    // 判据不能是「`.leaflet-tile-pane img` 有几个节点」。Leaflet 一发请求就把
+    // <img> 插进 DOM 了，请求失败它照样留在那儿 —— 于是网络受限时数出 18 张
+    // 「已加载」，接着断言骨架屏该撤，而骨架屏正确地留着（提示也正确地显示了
+    // 「底图瓦片加载失败（网络受限）」），报出一条假 FAIL。实测本机 18 张全是
+    // naturalWidth === 0。所以按**解码成功**的张数判，这才是「出图了」。
+    let decoded = 0
+    for (let i = 0; i < 20 && decoded === 0; i += 1) {
+      decoded = await page.evaluate(
+        () =>
+          [...document.querySelectorAll('.leaflet-tile-pane img')].filter(
+            (img) => img.complete && img.naturalWidth > 0,
+          ).length,
+      )
+      if (decoded === 0) await page.waitForTimeout(500)
     }
-    if (tiles > 0) {
-      check('底图瓦片已加载', tiles > 0, `${tiles} 张`)
-      // 骨架屏是等 tileLayer 的 load 事件（整屏瓦片都到位）才撤的，
-      // 比「第一张 img 出现在 DOM 里」晚一点，所以这里要等而不是立刻断言
+    if (decoded > 0) {
+      check('底图瓦片已加载', decoded > 0, `${decoded} 张`)
+      // 骨架屏等 tileload（有瓦片真的出图）才撤，比 <img> 进 DOM 晚，所以要等。
       let skeleton = 1
       for (let i = 0; i < 20 && skeleton > 0; i += 1) {
         skeleton = await page.locator('.map__skeleton').count()
@@ -212,12 +297,16 @@ try {
       check('瓦片到位后骨架屏消失', skeleton === 0)
     } else {
       // 离线环境下也不能是「一块灰 + 没有任何说明」
+      const nodes = await page.locator('.leaflet-tile-pane img').count()
+      skip('底图瓦片已加载', `${nodes} 个 img 节点但一张都没解码成功（网络受限）`)
       check(
         '瓦片下不来时给出可读提示',
         (await page.getByText('底图瓦片加载失败').count()) > 0 ||
           (await page.getByText('底图暂时下不来').count()) > 0,
-        '瓦片 0 张且无提示',
+        `img 节点 ${nodes} 个，解码 0 张，且无提示`,
       )
+      // 这时骨架屏**应该**留着（它是「还没出图」的视觉表达），但必须同时有文字说明，
+      // 否则就是一块和加载中无法区分的灰 —— 上面那条已经守住了文字。
     }
 
     // 拖拽 / 缩放必须真的能用 —— 「死的」很大一部分是没人验证过交互。
@@ -290,6 +379,17 @@ try {
     const pins = await page.locator('.bh-pin').count()
     check('起终点与 POI 标记已绘制', pins >= 4, `找到 ${pins} 个`)
 
+    // 下面一批断言钉的是 mock-server.mjs 的固定数据（2.2/2.6 公里、
+    // 「理工咖啡小铺」、4.6 分的拆分……）。真后端算出来的是另一套数字，
+    // 拿这些正则去套只会得到一串无意义的 FAIL，掩盖真正的问题。
+    //
+    // 判据用桩独有的 POI 名，而不是「有没有 AMAP_KEY」之类的环境猜测：
+    // 屏幕上写着「理工咖啡小铺」就说明这一屏确实是桩的数据。
+    const usingStub = /理工咖啡小铺/.test(await textOf(page.locator('.result__pois')))
+    if (!usingStub) {
+      console.log('  ——  非桩数据（真后端），以下钉死固定数字的断言记 skip')
+    }
+
     // T3：两条线的距离 + 时长必须并排印出来。图上有两条线不等于「显示出区别」——
     // 没有数字，谁也说不出推荐比原本多绕了多少。mock 的基准是 2180 米 / 21 分钟，
     // 推荐是 2620 米 / 26 分钟。
@@ -298,9 +398,17 @@ try {
     // 基准的两个数、推荐的两个数、两个带符号的差值，六个都得在屏幕上。
     // 区别是现在原值贴在它对应的现值头上，不再是隔着半屏的另一块。
     const tileText = await page.locator('.result__tiles').innerText()
-    check('指标格给出基准的距离和时长', /原\s*2\.2 公里/.test(tileText) && /原\s*21 分钟/.test(tileText), tileText.replace(/\n/g, ' | '))
-    check('指标格给出推荐的距离和时长', /2\.6 公里/.test(tileText) && /26/.test(tileText), tileText.replace(/\n/g, ' | '))
-    check('指标格给出带符号的差值', /\+440 米/.test(tileText) && /\+5 分钟/.test(tileText), tileText.replace(/\n/g, ' | '))
+    if (usingStub) {
+      check('指标格给出基准的距离和时长', /原\s*2\.2 公里/.test(tileText) && /原\s*21 分钟/.test(tileText), tileText.replace(/\n/g, ' | '))
+      check('指标格给出推荐的距离和时长', /2\.6 公里/.test(tileText) && /26/.test(tileText), tileText.replace(/\n/g, ' | '))
+      check('指标格给出带符号的差值', /\+440 米/.test(tileText) && /\+5 分钟/.test(tileText), tileText.replace(/\n/g, ' | '))
+    } else {
+      // 数字不钉，但「基准 / 推荐 / 差值三件事都印出来了」这个结构必须成立。
+      check('指标格给出基准值（原 …）', /原\s*[\d.]+/.test(tileText), tileText.replace(/\n/g, ' | '))
+      check('指标格给出带符号的差值', /[+-]\d/.test(tileText), tileText.replace(/\n/g, ' | '))
+      check('指标格四个格子都在', (await page.locator('.result__tiles .tile').count()) === 4)
+      skip('指标格给出桩的固定距离和时长', '真后端数字不同')
+    }
 
     // R5：原值必须和它自己的现值在同一个格子里，且小字在大字上面。
     // 光看整块文字过不了这一关 —— 两个数字都在 `.result__tiles` 里，
@@ -327,12 +435,27 @@ try {
     const detail = pairing.map((p) => `${p.label}: ${p.baseline} -> ${p.current} ${p.delta}`).join(' | ')
     check('带原值的格子正好是距离和总计两个', pairing.length === 2, detail)
     check('每个格子的原值压在自己的现值上方', pairing.length === 2 && pairing.every((p) => p.stacked), detail)
-    check(
-      '距离的原值配距离、时长的原值配时长',
-      pairing.some((p) => /2\.2 公里/.test(p.baseline) && p.current === '2.6 公里') &&
-        pairing.some((p) => /21 分钟/.test(p.baseline) && p.current === '26'),
-      detail,
-    )
+    if (usingStub) {
+      check(
+        '距离的原值配距离、时长的原值配时长',
+        pairing.some((p) => /2\.2 公里/.test(p.baseline) && p.current === '2.6 公里') &&
+          pairing.some((p) => /21 分钟/.test(p.baseline) && p.current === '26'),
+        detail,
+      )
+    } else {
+      // 数字换了，配对规则没换：带「公里/米」的原值必须配距离格，带「分钟」的配时长格。
+      // 这条才是 R5 真正要守的东西，和具体数值无关。
+      check(
+        '距离的原值配距离、时长的原值配时长',
+        pairing.length === 2 &&
+          pairing.every((p) =>
+            /公里|米/.test(p.baseline)
+              ? /公里|米/.test(p.current || '')
+              : !/公里|米/.test(p.current || ''),
+          ),
+        detail,
+      )
+    }
 
     // T4：「为什么推荐这条」必须真的回答为什么。三条理由分别是亮点、绕行代价、
     // 评分拆分；mock 的分数现在是按后端公式算出来的（derive()），
@@ -340,22 +463,59 @@ try {
     const reasonNodes = page.locator('.narrative__reason')
     const reasonCount = await reasonNodes.count()
     check('推荐理由是结构化的多条，不是一句叙事', reasonCount === 3, `${reasonCount} 条`)
-    const reasonText = await page.locator('.narrative__reasons').innerText()
-    check('理由点名了沿途亮点', /理工咖啡小铺/.test(reasonText) && /2 处亮点/.test(reasonText), reasonText.replace(/\n/g, ' | '))
-    check('理由说清绕行代价和额度', /多花 5 分钟/.test(reasonText) && /15 分钟额度以内/.test(reasonText), reasonText.replace(/\n/g, ' | '))
-    check(
-      '评分拆分和总分自洽',
-      /4\.6 \/ 7/.test(reasonText) && /亮点质量 3\.5/.test(reasonText) && /口味契合 2\.1/.test(reasonText) && /绕行扣 1\.0/.test(reasonText),
-      reasonText.replace(/\n/g, ' | '),
-    )
+    const reasonText = await textOf(page.locator('.narrative__reasons'))
+    if (usingStub) {
+      check('理由点名了沿途亮点', /理工咖啡小铺/.test(reasonText) && /2 处亮点/.test(reasonText), reasonText.replace(/\n/g, ' | '))
+      check('理由说清绕行代价和额度', /多花 5 分钟/.test(reasonText) && /15 分钟额度以内/.test(reasonText), reasonText.replace(/\n/g, ' | '))
+      check(
+        '评分拆分和总分自洽',
+        /4\.6 \/ 7/.test(reasonText) && /亮点质量 3\.5/.test(reasonText) && /口味契合 2\.1/.test(reasonText) && /绕行扣 1\.0/.test(reasonText),
+        reasonText.replace(/\n/g, ' | '),
+      )
+    } else {
+      // 换成结构断言：理由必须点到具体亮点名（不是「若干处」）、说清额度、给出拆分。
+      // 亮点名从卡片标题取，理由里必须真的出现它 —— 这才是「回答了为什么」。
+      const firstPoi = (await textOf(page.locator('.poi__name'))).trim()
+      check('理由点名了沿途亮点', !!firstPoi && reasonText.includes(firstPoi), `${firstPoi} | ${reasonText.replace(/\n/g, ' ')}`)
+      // 绕行代价有两种说法，取决于这次到底绕没绕：绕了要说清花了多少、在多少额度内；
+      // 没绕（兜底数据常见）说的是「几乎不用绕，探索是顺路捡的」。两种都算讲清楚了，
+      // 只钉「额度」会把后一种判成缺陷 —— 那句话本身没问题。
+      check(
+        '理由说清绕行代价',
+        /额度/.test(reasonText) || /不用绕|顺路/.test(reasonText),
+        reasonText.replace(/\n/g, ' | '),
+      )
+      check(
+        '评分拆分三项齐全',
+        /亮点质量/.test(reasonText) && /口味契合/.test(reasonText) && /绕行扣/.test(reasonText),
+        reasonText.replace(/\n/g, ' | '),
+      )
+      skip('评分拆分对上桩的 4.6 分', '真后端分数不同')
+    }
     // 叙事保留，但必须在理由下面收尾，不能顶掉理由
-    const narrativeBox = await page.locator('.narrative').innerText()
-    check(
-      '叙事退到理由下方收尾',
-      narrativeBox.indexOf('理工咖啡小铺') < narrativeBox.indexOf('从大工沿海边走'),
-      narrativeBox.replace(/\n/g, ' | '),
-    )
-    check('评分条数值不超过满分', !/([89]|\d\d)\.\d\/7/.test(await page.locator('.meter__value').innerText()), await page.locator('.meter__value').innerText())
+    const narrativeBox = await textOf(page.locator('.narrative'))
+    if (usingStub) {
+      check(
+        '叙事退到理由下方收尾',
+        narrativeBox.indexOf('理工咖啡小铺') < narrativeBox.indexOf('从大工沿海边走'),
+        narrativeBox.replace(/\n/g, ' | '),
+      )
+    } else {
+      // 不认具体文案，量 DOM 顺序：理由块必须排在叙事段落之前。
+      const reasonsBeforeText = await page.evaluate(() => {
+        const reasons = document.querySelector('.narrative__reasons')
+        const text = document.querySelector('.narrative__text, .narrative p')
+        if (!reasons || !text) return null
+        return !!(reasons.compareDocumentPosition(text) & 4)
+      })
+      check(
+        '叙事退到理由下方收尾',
+        reasonsBeforeText !== false,
+        `reasons 在叙事之前=${reasonsBeforeText}`,
+      )
+    }
+    const meterText = await textOf(page.locator('.meter__value'))
+    check('评分条数值不超过满分', !/([89]|\d\d)\.\d\/7/.test(meterText), meterText)
 
     await page.screenshot({ path: `${OUT}/${viewport.name}-result.png`, fullPage: true })
     await page.locator('.narrative').screenshot({ path: `${OUT}/${viewport.name}-reasons.png` })
@@ -399,26 +559,44 @@ try {
       check(`${name}无重叠（${info.count} 个）`, info.count > 0 && info.hits.length === 0, info.hits.join(','))
     }
 
-    // 未定稿接口：收藏会 404，界面应提示失败而不是崩溃
+    // 收藏：桩故意 404（验前端降级不崩），真后端 round3 真的实现了 /api/trip/save。
+    // 两种结果都可接受，不可接受的是「点了没反应」—— 所以断言「出现了某种回执」，
+    // 再按内容分流。
     await page.locator('.bh-btn--accent').click()
-    await page.waitForTimeout(600)
-    check('收藏接口缺失时提示失败而非崩溃', await page.getByText('收藏失败').isVisible())
+    await page.waitForTimeout(800)
+    const saveNote = (await textOf(page.locator('.result__actions'))) || ''
+    if (/收藏失败/.test(saveNote)) {
+      check('收藏接口缺失时提示失败而非崩溃', true)
+    } else {
+      check('收藏成功后给出回执', /已收藏|收藏成功/.test(saveNote), saveNote.replace(/\n/g, ' | '))
+    }
 
     // T8-4：反馈的视觉确认必须对应真实结果。按钮变色只说明「你点了这个」，
     // 「后端真的学到了什么」得由文字说 —— 归因失败时写「已记住」是骗人。
     const likeButton = page.locator('.result__feedback button').first()
     await likeButton.click()
-    await page.waitForTimeout(600)
+    await page.waitForTimeout(800)
     check('反馈按钮进入选中态', (await likeButton.getAttribute('aria-pressed')) === 'true')
-    const feedbackNote = await page.locator('.result__feedback-note').innerText()
+    const feedbackNote = await textOf(page.locator('.result__feedback-note'))
     // 钉的类目要跟着演示数据走：SCENARIOS[0] 的 POI type 是「餐饮」「景点」，
     // 归并后 learned = ['餐饮','景点']。这里钉「餐饮」而不是把 mock 的 type
     // 改成「咖啡厅」去迁就断言 —— 演示数据不为了让测试好过而改。
-    check(
-      '反馈给出文字确认并说明学到了什么',
-      /已记住/.test(feedbackNote) && /餐饮/.test(feedbackNote) && /加权/.test(feedbackNote),
-      feedbackNote,
-    )
+    if (usingStub) {
+      check(
+        '反馈给出文字确认并说明学到了什么',
+        /已记住/.test(feedbackNote) && /餐饮/.test(feedbackNote) && /加权/.test(feedbackNote),
+        feedbackNote,
+      )
+    } else {
+      // 真后端的类目由它自己的 POI type 决定，钉不了具体词。但「归因成功就说学到
+      // 了什么、归因失败就别说已记住」这条不能松 —— 那正是 T8-4 要防的骗人文案。
+      check('反馈给出文字回执', feedbackNote.trim().length > 0, feedbackNote)
+      check(
+        '文字回执与归因结果一致（说已记住就得点出类目）',
+        !/已记住/.test(feedbackNote) || /加权/.test(feedbackNote),
+        feedbackNote,
+      )
+    }
     await page.locator('.result__actions').screenshot({ path: `${OUT}/${viewport.name}-feedback.png` })
 
     // 点击亮点卡片高亮
@@ -435,71 +613,108 @@ try {
       '点途经点后图上标记进入 active 态',
       (await page.locator('.bh-pin--waypoint-active').count()) === 1,
     )
-    const panned = await page.locator('.leaflet-map-pane').evaluate((n) => getComputedStyle(n).transform)
-    await page.locator('.poi').nth(1).click()
-    await page.waitForTimeout(600)
-    const pannedAgain = await page
-      .locator('.leaflet-map-pane')
-      .evaluate((n) => getComputedStyle(n).transform)
-    check('点另一个亮点后地图平移过去', pannedAgain !== panned, `${panned} -> ${pannedAgain}`)
-    check('active 标记只有一个', (await page.locator('.bh-pin--poi-active').count()) === 1)
-    // 选中第二个之后，第一个必须退回未选中的**途经点**款（而不是变成普通附近亮点）
-    check('途经点标记始终与附近亮点不同款', (await page.locator('.bh-pin--waypoint').count()) === 1)
 
-    // 取消选中，回到干净状态再继续后面的断言
-    await page.locator('.poi').nth(1).click()
-    await page.waitForTimeout(300)
+    // 第二张卡片只在有两个以上亮点时才存在。真后端的兜底数据可能只给一个，
+    // 那时 nth(1).click() 会等到超时抛错 —— 整轮又断在这里。
+    if (poiCount > 1) {
+      const panned = await page.locator('.leaflet-map-pane').evaluate((n) => getComputedStyle(n).transform)
+      await page.locator('.poi').nth(1).click()
+      await page.waitForTimeout(600)
+      const pannedAgain = await page
+        .locator('.leaflet-map-pane')
+        .evaluate((n) => getComputedStyle(n).transform)
+      check('点另一个亮点后地图平移过去', pannedAgain !== panned, `${panned} -> ${pannedAgain}`)
+      check('active 标记只有一个', (await page.locator('.bh-pin--poi-active').count()) === 1)
+      // 选中第二个之后，第一个必须退回未选中的**途经点**款（而不是变成普通附近亮点）
+      check('途经点标记始终与附近亮点不同款', (await page.locator('.bh-pin--waypoint').count()) === 1)
+
+      // 取消选中，回到干净状态再继续后面的断言
+      await page.locator('.poi').nth(1).click()
+      await page.waitForTimeout(300)
+    } else {
+      skip('点另一个亮点后地图平移过去', `只有 ${poiCount} 个亮点`)
+      skip('途经点标记始终与附近亮点不同款', `只有 ${poiCount} 个亮点`)
+      await page.locator('.poi').first().click()
+      await page.waitForTimeout(300)
+    }
 
     // R6：点击展开详情。桩里第一条 POI 字段齐全（地址 / 电话 / 营业时间 / 照片），
     // 第二条只有基础五字段 —— 后者不该出现「展开详情」，更不该点开一个空框。
-    const rich = page.locator('.poi').first()
-    const plain = page.locator('.poi').nth(1)
+    //
+    // 真后端的 POI 字段由高德 / 兜底数据决定，哪张卡片齐全不确定。所以这里不再
+    // 假定「第一张齐全、第二张不齐」，而是按 `.poi__toggle` 在场与否分组：
+    // 有 toggle 的验展开链路，没 toggle 的验它确实不暴露 aria-expanded。
+    // 一张齐全的都没有时整组 skip —— 那是数据缺失，不是缺陷。
+    const rich = page.locator('.poi:has(.poi__toggle)').first()
+    const plain = page.locator('.poi:not(:has(.poi__toggle))').first()
+    const richCount = await page.locator('.poi:has(.poi__toggle)').count()
+    const plainCount = await page.locator('.poi:not(:has(.poi__toggle))').count()
 
-    // 上面 T2 的点击流程已经点过第一张卡片，它此刻是展开态。先收回去 ——
-    // 从「未展开」开始，下面的展开 / 收起才各自验到一次真实的状态切换。
-    if ((await rich.getAttribute('aria-expanded')) === 'true') {
-      await rich.click()
-      await page.waitForTimeout(250)
+    if (plainCount > 0) {
+      check('缺字段的亮点不提示展开', (await plain.locator('.poi__toggle').count()) === 0)
+      check(
+        '缺字段的亮点不暴露 aria-expanded',
+        (await plain.getAttribute('aria-expanded')) === null,
+        String(await plain.getAttribute('aria-expanded')),
+      )
+    } else {
+      skip('缺字段的亮点不提示展开', '本轮所有亮点字段都齐全')
     }
 
-    check('缺字段的亮点不提示展开', (await plain.locator('.poi__toggle').count()) === 0)
-    check(
-      '缺字段的亮点不暴露 aria-expanded',
-      (await plain.getAttribute('aria-expanded')) === null,
-      String(await plain.getAttribute('aria-expanded')),
-    )
-    check('字段齐全的亮点提示可展开', (await rich.locator('.poi__toggle').count()) === 1)
-    check('未展开时 aria-expanded 为 false', (await rich.getAttribute('aria-expanded')) === 'false')
+    if (richCount === 0) {
+      skip('字段齐全的亮点提示可展开', '本轮没有字段齐全的亮点')
+      skip('详情区给出地址 / 电话 / 营业时间', '本轮没有字段齐全的亮点')
+      skip('Enter / Space 展开收起详情', '本轮没有字段齐全的亮点')
+    } else {
+      // 上面 T2 的点击流程可能已经把它展开了。先收回去 —— 从「未展开」开始，
+      // 下面的展开 / 收起才各自验到一次真实的状态切换。
+      if ((await rich.getAttribute('aria-expanded')) === 'true') {
+        await rich.click()
+        await page.waitForTimeout(250)
+      }
 
-    await rich.click()
-    await page.waitForTimeout(250)
-    check('展开后 aria-expanded 为 true', (await rich.getAttribute('aria-expanded')) === 'true')
-    const detailText = await rich.locator('.poi__detail').innerText()
-    check(
-      '详情区给出地址 / 电话 / 营业时间',
-      /凌工路 2 号/.test(detailText) && /0411-8470-9988/.test(detailText) && /07:30-21:00/.test(detailText),
-      detailText.replace(/\n/g, ' | '),
-    )
-    check('详情区不摆空占位', !/暂无|undefined|\[\]/.test(detailText), detailText.replace(/\n/g, ' | '))
-    // 照片必须真的画出来（宽高非 0），不是一个加载失败的破图框
-    const photoBox = await rich.locator('.poi__photo').boundingBox()
-    check('详情区渲染照片', !!photoBox && photoBox.width > 10 && photoBox.height > 10, JSON.stringify(photoBox))
-    await page.locator('.poi').first().screenshot({ path: `${OUT}/${viewport.name}-poi-expanded.png` })
+      check('字段齐全的亮点提示可展开', (await rich.locator('.poi__toggle').count()) === 1)
+      check('未展开时 aria-expanded 为 false', (await rich.getAttribute('aria-expanded')) === 'false')
 
-    // 再点收起。展开态收起后详情区必须真的从 DOM 消失，不是只改了个 class
-    await rich.click()
-    await page.waitForTimeout(250)
-    check('再点一次收起详情', (await rich.locator('.poi__detail').count()) === 0)
-    check('收起后 aria-expanded 回到 false', (await rich.getAttribute('aria-expanded')) === 'false')
+      await rich.click()
+      await page.waitForTimeout(250)
+      check('展开后 aria-expanded 为 true', (await rich.getAttribute('aria-expanded')) === 'true')
+      const detailText = await textOf(rich.locator('.poi__detail'))
+      if (usingStub) {
+        check(
+          '详情区给出地址 / 电话 / 营业时间',
+          /凌工路 2 号/.test(detailText) && /0411-8470-9988/.test(detailText) && /07:30-21:00/.test(detailText),
+          detailText.replace(/\n/g, ' | '),
+        )
+      } else {
+        // 字段值不钉，但展开了就必须真的有内容 —— 点开一个空框是 R6 要防的事。
+        check('展开后详情区有内容', detailText.trim().length > 0, detailText.replace(/\n/g, ' | '))
+      }
+      check('详情区不摆空占位', !/暂无|undefined|\[\]/.test(detailText), detailText.replace(/\n/g, ' | '))
+      // 照片必须真的画出来（宽高非 0），不是一个加载失败的破图框
+      if ((await rich.locator('.poi__photo').count()) > 0) {
+        const photoBox = await rich.locator('.poi__photo').boundingBox()
+        check('详情区渲染照片', !!photoBox && photoBox.width > 10 && photoBox.height > 10, JSON.stringify(photoBox))
+      } else {
+        skip('详情区渲染照片', '这条亮点没有照片字段')
+      }
+      await rich.screenshot({ path: `${OUT}/${viewport.name}-poi-expanded.png` })
 
-    // 键盘可达：Enter 展开、Space 收起。role=button 的卡片必须能不用鼠标操作
-    await rich.focus()
-    await page.keyboard.press('Enter')
-    await page.waitForTimeout(250)
-    check('Enter 可展开详情', (await rich.locator('.poi__detail').count()) === 1)
-    await page.keyboard.press('Space')
-    await page.waitForTimeout(250)
-    check('Space 可收起详情', (await rich.locator('.poi__detail').count()) === 0)
+      // 再点收起。展开态收起后详情区必须真的从 DOM 消失，不是只改了个 class
+      await rich.click()
+      await page.waitForTimeout(250)
+      check('再点一次收起详情', (await rich.locator('.poi__detail').count()) === 0)
+      check('收起后 aria-expanded 回到 false', (await rich.getAttribute('aria-expanded')) === 'false')
+
+      // 键盘可达：Enter 展开、Space 收起。role=button 的卡片必须能不用鼠标操作
+      await rich.focus()
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(250)
+      check('Enter 可展开详情', (await rich.locator('.poi__detail').count()) === 1)
+      await page.keyboard.press('Space')
+      await page.waitForTimeout(250)
+      check('Space 可收起详情', (await rich.locator('.poi__detail').count()) === 0)
+    }
 
     // 展开一次会连带把这张卡片选中（一次点击两件事），清掉再继续
     if ((await page.locator('.poi--active').count()) > 0) {
@@ -530,16 +745,22 @@ try {
     check('结果页头不重复摆返回首页', !(await page.locator('.result__head').innerText()).includes('返回首页'))
 
     await page.locator('.head__back').click()
-    await page.waitForSelector('.home__form', { timeout: 5000 })
-    check('可返回首页', (await page.locator('.home__form').count()) === 1)
+    check('可返回首页', await waitFor(page, '.home__form', 5000))
     check('返回后出现最近查询', (await page.locator('.history__item').count()) > 0)
 
-    // 错误态：mock 后端对含“无结果”的起点返回 404
+    // 错误态：桩对含「无结果」的起点返回 404。真后端会拿它去做地理编码，
+    // 认不出同样是 404「未找到可行路线」—— 两边的文案一致，所以这条不用分流。
+    // 唯一的区别是真后端要打一次 Nominatim，慢一些，超时给足。
     await page.locator('input').first().fill('无结果起点')
     await page.locator('input').nth(1).fill('某个终点')
     await page.locator('button[type="submit"]').click()
-    await page.waitForSelector('[role="alert"]', { timeout: 8000 })
-    check('后端错误文案透传', (await page.locator('[role="alert"]').innerText()).includes('未找到可行路线'))
+    const gotAlert = await waitFor(page, '[role="alert"]', 20000)
+    check('查不到时给出错误提示', gotAlert)
+    check(
+      '后端错误文案透传',
+      (await textOf(page.locator('[role="alert"]'))).includes('未找到可行路线'),
+      await textOf(page.locator('[role="alert"]')),
+    )
 
     await page.screenshot({ path: `${OUT}/${viewport.name}-error.png`, fullPage: true })
 
@@ -550,8 +771,8 @@ try {
     await page.locator('input').first().fill('大连理工大学')
     await page.locator('input').nth(1).fill('星海广场')
     await page.locator('button[type="submit"]').click()
-    await page.waitForTimeout(1200)
-    const deadText = await page.locator('[role="alert"]').innerText()
+    await page.waitForTimeout(1500)
+    const deadText = await textOf(page.locator('[role="alert"]'))
     check('后端连不上时给出中文提示', /连不上后端服务/.test(deadText), deadText)
     check('提示里没有英文原文', !/failed to fetch/i.test(deadText), deadText)
     await page.locator('.home__form').screenshot({ path: `${OUT}/${viewport.name}-dead-backend.png` })
@@ -568,5 +789,11 @@ try {
   await browser.close()
 }
 
+// SKIP 必须印在结尾，否则「全部通过」会把「一半断言根本没跑」说成成功 ——
+// 那比 FAIL 更危险：看到绿色就不会再去查了。
+if (skipped.length) {
+  console.log(`\n跳过 ${skipped.length} 项（数据前提不成立）:`)
+  for (const label of [...new Set(skipped)]) console.log(`  - ${label}`)
+}
 console.log(problems.length ? `\n失败 ${problems.length} 项` : '\n全部通过')
 process.exit(problems.length ? 1 : 0)

@@ -37,7 +37,7 @@ const emit = defineEmits(['back'])
           :class="['head__status', online ? 'head__status--on' : 'head__status--off']"
         >
           <i class="head__dot" aria-hidden="true" />
-          {{ online ? '后端已连接' : '后端未连接' }}
+          {{ online ? '高德真实数据已连接' : '真实数据未就绪' }}
         </span>
       </div>
     </div>

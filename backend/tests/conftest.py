@@ -9,12 +9,14 @@ from app.main import app
 # LLM_* 会渗进测试进程：用例会打真实网络请求，快则拿到与桩不一致的数据、
 # 慢则挂在超时上（08-26 那次「测试卡死」就是这个根因）。
 # 逐个用例清掉，需要的用例自己 monkeypatch.setenv / patch.dict 显式设回去。
-ISOLATED_ENV_VARS = ("AMAP_KEY", "LLM_API_BASE", "LLM_MODEL")
+ISOLATED_ENV_VARS = ("AMAP_KEY", "LLM_API_BASE", "LLM_MODEL", "ALLOW_OFFLINE_FALLBACK")
 
 
 @pytest.fixture(autouse=True)
 def isolate_environment():
     saved = {name: os.environ.pop(name, None) for name in ISOLATED_ENV_VARS}
+    # 旧的离线场景回归仍可显式测试，但生产环境默认没有这个开关，正式接口不会降级。
+    os.environ["ALLOW_OFFLINE_FALLBACK"] = "1"
     try:
         yield
     finally:

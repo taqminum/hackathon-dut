@@ -1,12 +1,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { DALIAN_LANDMARKS } from '../constants.js'
 import { isCoordString } from '../utils/geo.js'
 
 /**
  * 地点输入框。
- * 后端 /api/place/suggest 未定稿：有响应就用远端联想，无响应退化为本地常用地点过滤。
- * 值本身透传给后端（坐标串或地名皆可），不做强校验，避免挡住演示。
+ * 联想项只展示后端从高德取得的真实地点；服务失败时明确报错，不混入本地假结果。
+ * 值本身仍可透传给后端（坐标串或地名皆可），让用户在联想失败时直接提交。
  */
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -30,6 +29,7 @@ const open = ref(false)
 const activeIndex = ref(-1)
 const remote = ref([])
 const loading = ref(false)
+const suggestError = ref('')
 let debounceTimer = null
 let requestSeq = 0
 
@@ -40,31 +40,21 @@ const value = computed({
 
 const isCoord = computed(() => isCoordString(props.modelValue))
 
-/** 本地兜底：按关键词过滤常用地点，空关键词时给全部 */
-const localMatches = computed(() => {
-  const keyword = props.modelValue.trim()
-  if (!keyword) return DALIAN_LANDMARKS
-  if (isCoord.value) return []
-  return DALIAN_LANDMARKS.filter((item) => item.name.includes(keyword))
-})
-
-const options = computed(() => (remote.value.length ? remote.value : localMatches.value))
+const options = computed(() => remote.value)
 
 /**
  * R3：一条都联想不出来时说句话，别给一片空白。
  *
- * 链路本身是通的（远端 inputtips + 本地 DALIAN_LANDMARKS 兜底），但无 key 时
- * 后端返回空列表，而本地只有那几个地标 —— 搜「麦当劳」两边都是空，下拉整个不渲染，
- * 用户看到的是「输入了但没反应」，会以为功能坏了。这一行告诉他可以直接输。
+ * 高德没有返回匹配项时，下拉不能一片空白。这一行告诉用户仍可直接提交地名。
  *
  * 三种情况不提示：正在联想（loading 有自己的文案）、输入是坐标串
- * （下面 foot 已经显示「坐标 …」）、关键词为空（此时本地兜底给全部地标）。
+ * （下面 foot 已经显示「坐标 …」）、关键词为空。
  */
 const emptyHint = computed(() => {
   if (loading.value || isCoord.value) return ''
   if (!props.modelValue.trim()) return ''
   if (options.value.length) return ''
-  return '联想不可用，可直接输入地名或坐标'
+  return suggestError.value || '高德没有找到匹配地点，可直接输入完整地名或坐标'
 })
 
 watch(
@@ -73,6 +63,7 @@ watch(
     activeIndex.value = -1
     if (!props.suggestFn || isCoordString(next) || !next.trim()) {
       remote.value = []
+      suggestError.value = ''
       return
     }
     scheduleSuggest(next.trim())
@@ -84,13 +75,17 @@ function scheduleSuggest(keyword) {
   debounceTimer = setTimeout(async () => {
     const seq = ++requestSeq
     loading.value = true
+    suggestError.value = ''
     try {
       const result = await props.suggestFn({ keyword })
       // 丢弃过期响应，避免快速输入时结果错位
       if (seq !== requestSeq) return
       remote.value = Array.isArray(result) ? result.slice(0, 6) : []
-    } catch {
-      if (seq === requestSeq) remote.value = []
+    } catch (error) {
+      if (seq === requestSeq) {
+        remote.value = []
+        suggestError.value = error?.message || '真实地点联想暂不可用'
+      }
     } finally {
       if (seq === requestSeq) loading.value = false
     }
@@ -192,8 +187,8 @@ onBeforeUnmount(() => {
 
       <!-- R3：空态提示。role="status" 是因为它不可点选，放进 listbox 里
            当成一个 option 会让读屏念出一个选不了的选项。 -->
-      <p v-if="open && emptyHint" class="place__empty" role="status" aria-live="polite">
-        {{ emptyHint }}
+      <p v-if="open && (suggestError || emptyHint)" class="place__empty" role="status" aria-live="polite">
+        {{ suggestError || emptyHint }}
       </p>
 
       <ul v-if="open && options.length" class="place__list" role="listbox">

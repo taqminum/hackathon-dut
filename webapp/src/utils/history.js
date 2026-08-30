@@ -6,6 +6,29 @@
 const STORAGE_KEY = 'serendipity.history.v1'
 const MAX_ITEMS = 5
 
+function normalize(value) {
+  return String(value ?? '').trim().toLocaleLowerCase('zh-CN')
+}
+
+/** 同一路线可能来自两条入口：手输时 origin/destination 是地名，快速体验或
+ * 下拉选择时它们是坐标、地名放在 *Label。界面最后都显示地名，所以去重也要
+ * 按同一套可见身份判断；否则用户会看到两条文字完全相同的历史记录。 */
+function entryKey(entry) {
+  const origin = normalize(entry?.originLabel || entry?.origin)
+  const destination = normalize(entry?.destinationLabel || entry?.destination)
+  return `${origin}\u0000${destination}\u0000${normalize(entry?.mode)}`
+}
+
+function dedupe(items) {
+  const seen = new Set()
+  return items.filter((item) => {
+    const key = entryKey(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function storage() {
   try {
     if (typeof globalThis.localStorage === 'undefined') return null
@@ -24,9 +47,12 @@ export function loadHistory() {
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((item) => item && typeof item.origin === 'string' && typeof item.destination === 'string')
-      .slice(0, MAX_ITEMS)
+    return dedupe(
+      parsed.filter(
+        (item) =>
+          item && typeof item.origin === 'string' && typeof item.destination === 'string',
+      ),
+    ).slice(0, MAX_ITEMS)
   } catch {
     return []
   }
@@ -38,14 +64,8 @@ export function pushHistory(entry) {
 
   if (!entry?.origin || !entry?.destination) return current
 
-  const deduped = current.filter(
-    (item) =>
-      !(
-        item.origin === entry.origin &&
-        item.destination === entry.destination &&
-        item.mode === entry.mode
-      ),
-  )
+  const key = entryKey(entry)
+  const deduped = current.filter((item) => entryKey(item) !== key)
 
   const next = [{ ...entry, at: Date.now() }, ...deduped].slice(0, MAX_ITEMS)
 

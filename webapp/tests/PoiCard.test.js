@@ -126,13 +126,17 @@ describe('PoiCard 展开详情', () => {
     expect(wrapper.text()).not.toContain('70')
   })
 
-  // 第一张卡是路线真的经过的那个，其余只是在旁边。配合真实米数，用户自己
-  // 就能看出 1 号是 2 米、2 号是 130 米。
-  it('labels the first card as the waypoint and the rest as nearby', () => {
+  // 推荐结果里的卡片默认都是真实途经点，并按访问顺序编号。
+  it('labels every selected card as an ordered waypoint by default', () => {
     const waypoint = mountCard({ ...BASE, off_route_meters: 2 }, { index: 0 })
-    expect(waypoint.find('.poi__route-kind').text()).toBe('途经')
+    expect(waypoint.find('.poi__route-kind').text()).toBe('第 1 站')
 
-    const nearby = mountCard({ ...BASE, off_route_meters: 130 }, { index: 1 })
+    const second = mountCard({ ...BASE, off_route_meters: 130, visit_order: 2 }, { index: 1 })
+    expect(second.find('.poi__route-kind').text()).toBe('第 2 站')
+  })
+
+  it('labels a non-waypoint discovery explicitly as nearby', () => {
+    const nearby = mountCard({ ...BASE, off_route_meters: 130, is_waypoint: false }, { index: 1 })
     expect(nearby.find('.poi__route-kind').text()).toBe('附近')
   })
 

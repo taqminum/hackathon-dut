@@ -27,6 +27,51 @@ describe('history store', () => {
     expect(loadHistory()).toHaveLength(1)
   })
 
+  it('deduplicates the same visible route saved once as names and once as coordinates', () => {
+    pushHistory({
+      origin: '121.5197,38.8856',
+      destination: '121.5839,38.8816',
+      originLabel: '大连理工大学',
+      destinationLabel: '星海广场',
+      mode: '+15',
+    })
+    pushHistory({
+      origin: '大连理工大学',
+      destination: '星海广场',
+      originLabel: '大连理工大学',
+      destinationLabel: '星海广场',
+      mode: '+15',
+    })
+
+    const history = loadHistory()
+    expect(history).toHaveLength(1)
+    expect(history[0].origin).toBe('大连理工大学')
+  })
+
+  it('collapses visible duplicates already present in storage', () => {
+    globalThis.localStorage.setItem(
+      'serendipity.history.v1',
+      JSON.stringify([
+        {
+          origin: '大连理工大学',
+          destination: '星海广场',
+          originLabel: '大连理工大学',
+          destinationLabel: '星海广场',
+          mode: '+15',
+        },
+        {
+          origin: '121.5197,38.8856',
+          destination: '121.5839,38.8816',
+          originLabel: '大连理工大学',
+          destinationLabel: '星海广场',
+          mode: '+15',
+        },
+      ]),
+    )
+
+    expect(loadHistory()).toHaveLength(1)
+  })
+
   it('keeps the same route under a different mode', () => {
     pushHistory({ origin: 'A', destination: 'B', mode: '+5' })
     pushHistory({ origin: 'A', destination: 'B', mode: '+15' })

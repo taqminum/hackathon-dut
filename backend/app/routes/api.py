@@ -4,6 +4,7 @@ import math
 import os
 import threading
 import time
+from itertools import combinations
 
 import requests
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -14,7 +15,15 @@ from app.services.detour_calculator import calculate_detour
 from app.services.geocoder import normalize_coordinate, resolve_location
 from app.services.narrative import DEFAULT_NARRATIVE, generate_narrative
 from app.services.poi_explorer import explore_pois_along_route
-from app.services.route_engine import get_candidate_routes, point_to_route_meters, throttle_amap
+from app.services.route_engine import (
+    SOURCE_AMAP,
+    SOURCE_FALLBACK,
+    get_candidate_routes,
+    get_route_via_waypoints,
+    point_to_route_meters,
+    point_to_route_progress,
+    throttle_amap,
+)
 from app.services.scorer import SerendipityScorer
 
 
@@ -46,15 +55,20 @@ DETOUR_APPETITE = {"+5": 0.6, "+15": 0.2, "roam": 0.0}
 
 # 每个候选要两次高德步行调用（步行接口不支持 waypoint，只能两段拼接）。
 # 截断到 3 个是为了控制配额：一次请求约 7 次调用。
-MAX_CANDIDATES = 3
+MAX_CANDIDATES = 6
 # 高德对同一个 Key 有并发上限（infocode 10021），route_engine 里已按
 # AMAP_MIN_INTERVAL_SECONDS 限流，这里再开大线程池只会互相排队并触发限流重试。
 MAX_WORKERS = 2
 # 整个 recommend 的总预算。超时就用已经算完的候选，不空手而归。
-TOTAL_BUDGET_SECONDS = 8.0
+TOTAL_BUDGET_SECONDS = 25.0
 # 沿线采样每个点的搜索半径。三点覆盖整条路线，搜索半径可以比最终展示的
 # 「贴着路线」阈值更宽；候选先广搜，_collect_highlights 再按真实折线过滤。
 POI_SEARCH_RADIUS = 400
+POI_SEARCH_RADIUS_BY_MODE = {"+5": 300, "+15": 600, "roam": 1000}
+# 使用高德官方分类大类，不依赖「餐饮 / 景点」这类非标准模糊词。
+AMAP_POI_TYPES = ["050000", "060000", "080000", "110000", "140000"]
+SUPPORTED_POI_COUNTS = {1, 2, 3}
+MAX_ROUTE_SET_EVALUATIONS = 3
 
 # 返回给前端的沿途亮点上限。第一个必定是被选中的那个 POI（路线真的经过它），
 # 其余是**确实贴着这条路线**的其他候选。
@@ -88,11 +102,14 @@ def recommend_route(
     origin: str = Body(..., embed=True),
     destination: str = Body(..., embed=True),
     mode: str = Body("+5", embed=True),
+    poi_count: int = Body(1, embed=True),
 ):
     started_at = time.monotonic()
 
     if mode not in SUPPORTED_MODES:
         raise HTTPException(status_code=422, detail="不支持的探索模式")
+    if poi_count not in SUPPORTED_POI_COUNTS:
+        raise HTTPException(status_code=422, detail="一次可绕行 1 到 3 个地点")
 
     # 校验通过后立刻记下模式：`GET /api/preference` 是演示时用来证明「它记住了」的，
     # 只靠反馈写入的话，用户连点三次 +15 那个接口还会显示 +5。
@@ -123,32 +140,66 @@ def recommend_route(
         raise HTTPException(status_code=404, detail="未找到可行路线")
 
     baseline = baseline_routes[0]
+    # 正式推荐只接受真实高德路网。无 Key、Key 失效、限流或网络失败时
+    # route_engine 会给 fallback；这里必须明确拦住，不能把估算路线伪装成在线结果。
+    offline_fallback_enabled = os.getenv("ALLOW_OFFLINE_FALLBACK") == "1"
+    if baseline.get("source") == SOURCE_FALLBACK and not offline_fallback_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="真实高德路线服务未就绪，请检查 AMAP_KEY 和网络后重试",
+        )
     baseline_minutes = round(baseline["duration"] / 60)
 
     try:
-        # 传基准折线：POI 按里程 25%/50%/75% 三点采样，而不是只看起终点中点。
+        # 按路线长度自适应采样，形成近似连续的沿线搜索走廊。
         pois = explore_pois_along_route(
             resolved_origin,
             resolved_destination,
-            ["餐饮", "景点", "购物"],
-            radius=POI_SEARCH_RADIUS,
+            ["餐饮", "景点", "购物"] if baseline.get("source") == SOURCE_FALLBACK else AMAP_POI_TYPES,
+            radius=POI_SEARCH_RADIUS_BY_MODE[mode],
             polyline=baseline.get("polyline"),
+            allow_fallback=offline_fallback_enabled,
+            strict=baseline.get("source") == SOURCE_AMAP,
         )
-    except Exception:
-        pois = []
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    candidates = _evaluate_candidates(
-        resolved_origin,
-        resolved_destination,
+    if not pois:
+        raise HTTPException(status_code=404, detail="这条路线沿线没有找到可核实的值得绕行地点")
+
+    # 单点候选需要逐个走真实路网，才能比较绕行时间；多点如果也先逐个规划，
+    # 6 个候选会额外消耗 12 次步行请求，等真正组合路线时总预算已经耗尽。
+    # 多点先只用真实 POI 元数据和它到基准折线的实测距离做组合初筛，最后对
+    # 排名前三的组合调用真实高德分段路线。最终返回值仍全部来自真实路网。
+    candidates = (
+        _evaluate_candidates(
+            resolved_origin,
+            resolved_destination,
+            mode,
+            baseline,
+            pois,
+            started_at,
+        )
+        if poi_count == 1
+        else _metadata_candidates(pois, baseline)
+    )
+
+    chosen = _choose_route_candidate(
+        candidates,
+        poi_count,
         mode,
         baseline,
-        pois,
+        resolved_origin,
+        resolved_destination,
         started_at,
     )
 
-    chosen = _choose_candidate(candidates, mode)
-
     if not chosen:
+        if baseline.get("source") == SOURCE_AMAP:
+            raise HTTPException(
+                status_code=404,
+                detail=f"没有找到能在当前时间预算内一次经过 {poi_count} 个地点的真实路线",
+            )
         return {
             "baseline_minutes": baseline_minutes,
             "detour_minutes": 0,
@@ -162,9 +213,14 @@ def recommend_route(
             # 前端拿不到就静默不画灰虚线，表现为「有时候有对比、有时候没有」且不报错，
             # 正是 P2-5 修过的那类隐性依赖。这里降级后推荐路线就是基准本身。
             "baseline_route": baseline,
+            # 同理，trip_id 也必须两个出口都有。少了它前端反馈按钮会带
+            # trip_id=null 发出去，接口 422，用户看到的是「点了喜欢没反应」——
+            # 而这条降级路径恰恰是最需要收集反馈的一条（没挑出亮点）。
+            # pois 为空时反馈无从归因，但模式偏好照样要记下来。
+            "trip_id": _remember_recommendation([], mode),
         }
 
-    highlights = _collect_highlights(chosen, pois)
+    highlights = _waypoint_highlights(chosen, baseline)
 
     return {
         "baseline_minutes": baseline_minutes,
@@ -182,6 +238,8 @@ def recommend_route(
         # 前端 ResultView 已经在反馈时回传 result.trip_id，所以这里发一个
         # 轻量的 ticket 出去，不需要改前端 bundle 就能闭环。
         "trip_id": _remember_recommendation(highlights, mode),
+        "poi_count": len(highlights),
+        "data_source": "amap" if chosen["route"].get("source") == SOURCE_AMAP else "test",
     }
 
 
@@ -264,7 +322,11 @@ def _safe_narrative(route: dict, mode: str, pois: list, origin: str, destination
 
 
 def _prepare_poi_candidates(pois: list) -> list[tuple[dict, str]]:
-    """挑出坐标可用的 POI，按评分降序去重，截断到 MAX_CANDIDATES 个。"""
+    """挑出坐标可用的 POI，按质量初筛后截断。
+
+    优先使用高德给的大型 POI 入口坐标，避免把路线规划到景区/商场的几何中心。
+    无评分的人文和公园候选保留一个中性质量，不能被商业门店全部挤掉。
+    """
     prepared: list[tuple[dict, str]] = []
     seen: set[str] = set()
 
@@ -272,7 +334,7 @@ def _prepare_poi_candidates(pois: list) -> list[tuple[dict, str]]:
         if not isinstance(poi, dict):
             continue
         try:
-            coord = normalize_coordinate(poi.get("location"))
+            coord = normalize_coordinate(poi.get("navigation_location") or poi.get("location"))
         except ValueError:
             continue
         if coord in seen:
@@ -280,8 +342,17 @@ def _prepare_poi_candidates(pois: list) -> list[tuple[dict, str]]:
         seen.add(coord)
         prepared.append((poi, coord))
 
-    prepared.sort(key=lambda item: _normalize_rating(item[0].get("rating", 0)), reverse=True)
+    prepared.sort(key=lambda item: _preliminary_poi_quality(item[0]), reverse=True)
     return prepared[:MAX_CANDIDATES]
+
+
+def _preliminary_poi_quality(poi: dict) -> tuple[float, int, str]:
+    rating = _normalize_rating(poi.get("rating", 0))
+    # 无评分不是 0 分。给中性值只用于候选排序，接口仍原样返回 rating=0。
+    quality = rating if rating > 0 else 3.8
+    poi_type = str(poi.get("type") or "")
+    non_commercial = int(any(word in poi_type for word in ("风景", "公园", "博物", "文化", "美术")))
+    return quality, non_commercial, str(poi.get("name") or "")
 
 
 def _evaluate_candidate(
@@ -316,7 +387,7 @@ def _evaluate_candidate(
     if budget is not None and detour_seconds > budget * 60:
         return None
 
-    detour_minutes = round(detour_seconds / 60)
+    detour_minutes = round(detour_seconds / 60, 1)
     # R4：这个 POI 离基准路线多远。这是模式差异的输入 —— 兜底数据下绕行分钟数
     # 常常是 0（7 公里的路上绕 100 米不到一分钟），只靠 detour_minutes 分不开三个模式。
     off_route_meters = point_to_route_meters(poi_coord, baseline.get("polyline"))
@@ -381,6 +452,29 @@ def _evaluate_candidates(
     return candidates
 
 
+def _metadata_candidates(pois: list, baseline: dict) -> list[dict]:
+    """为多途经点组合做无网络初筛；真实绕行只在组合入围后计算。"""
+    candidates: list[dict] = []
+    for poi, coord in _prepare_poi_candidates(pois):
+        offset = point_to_route_meters(coord, baseline.get("polyline"))
+        if offset is None:
+            continue
+        rating = _normalize_rating(poi.get("rating", 0))
+        quality = (rating if rating > 0 else 3.8) / 5.0
+        candidates.append(
+            {
+                "poi": poi,
+                "off_route_meters": offset,
+                "score": scorer.score(
+                    detour_minutes=0,
+                    poi_quality=quality,
+                    tag_affinity=preferences.affinity(poi.get("type")),
+                ),
+            }
+        )
+    return candidates
+
+
 def _choose_candidate(candidates: list[dict], mode: str) -> dict | None:
     """在预算内挑最值得的候选，模式决定「愿意为它偏离主路多远」。
 
@@ -408,6 +502,165 @@ def _choose_candidate(candidates: list[dict], mode: str) -> dict | None:
         return (item["score"] - penalty, -item["detour_minutes"])
 
     return max(candidates, key=rank)
+
+
+def _choose_route_candidate(
+    candidates: list[dict],
+    poi_count: int,
+    mode: str,
+    baseline: dict,
+    origin: str,
+    destination: str,
+    started_at: float,
+) -> dict | None:
+    """选出一个或多个真实途经点，并返回经过它们的完整路线。"""
+    if poi_count == 1:
+        chosen = _choose_candidate(candidates, mode)
+        if chosen:
+            chosen = {**chosen, "items": [chosen]}
+        return chosen
+
+    if len(candidates) < poi_count:
+        return None
+
+    ranked_sets: list[tuple[float, list[dict]]] = []
+    appetite = DETOUR_APPETITE.get(mode, 0.2)
+    for group in combinations(candidates, poi_count):
+        with_progress = [
+            (
+                point_to_route_progress(
+                    item["poi"].get("navigation_location") or item["poi"].get("location"),
+                    baseline.get("polyline"),
+                ),
+                item,
+            )
+            for item in group
+        ]
+        if any(progress is None for progress, _item in with_progress):
+            continue
+        with_progress.sort(key=lambda pair: pair[0])
+        progresses = [progress for progress, _item in with_progress]
+        ordered = [item for _progress, item in with_progress]
+
+        # 太靠近的两个点不是一次「绕两个地方」，只是同一街区重复计数。
+        separation_bonus = sum(
+            min(0.2, max(0.0, progresses[index + 1] - progresses[index]))
+            for index in range(len(progresses) - 1)
+        )
+        categories = {str(item["poi"].get("type") or "").split(";", 1)[0] for item in ordered}
+        diversity_bonus = 0.25 * max(0, len(categories) - 1)
+        distance_penalty = sum(
+            appetite
+            * float(
+                POI_SEARCH_RADIUS
+                if item.get("off_route_meters") is None
+                else item["off_route_meters"]
+            )
+            / 100
+            for item in ordered
+        )
+        cheap_rank = (
+            sum(float(item["score"]) for item in ordered) / len(ordered)
+            + separation_bonus
+            + diversity_bonus
+            - distance_penalty
+        )
+        ranked_sets.append((cheap_rank, ordered))
+
+    ranked_sets.sort(key=lambda entry: entry[0], reverse=True)
+    feasible: list[dict] = []
+    for _cheap_rank, items in ranked_sets[:MAX_ROUTE_SET_EVALUATIONS]:
+        if time.monotonic() - started_at >= TOTAL_BUDGET_SECONDS:
+            break
+        waypoint_coords = [
+            normalize_coordinate(item["poi"].get("navigation_location") or item["poi"].get("location"))
+            for item in items
+        ]
+        try:
+            route = get_route_via_waypoints(origin, destination, waypoint_coords)
+        except Exception:
+            continue
+        if not route:
+            continue
+        detour_seconds = calculate_detour(baseline["duration"], route["duration"])
+        if detour_seconds > MAX_DETOUR_MINUTES[mode] * 60:
+            continue
+        detour_minutes = round(detour_seconds / 60, 1)
+        score = _score_poi_set(items, detour_minutes)
+        feasible.append(
+            {
+                "items": items,
+                "poi": items[0]["poi"],
+                "route": route,
+                "detour_minutes": detour_minutes,
+                "score": score,
+            }
+        )
+
+    if not feasible:
+        return None
+    return max(feasible, key=lambda item: (item["score"], -item["detour_minutes"]))
+
+
+def _score_poi_set(items: list[dict], detour_minutes: float) -> float:
+    ratings = [_normalize_rating(item["poi"].get("rating", 0)) for item in items]
+    # 没有地图评分时使用中性质量参与算法，但绝不写回响应或页面。
+    qualities = [(rating if rating > 0 else 3.8) / 5.0 for rating in ratings]
+    affinities = [preferences.affinity(item["poi"].get("type")) for item in items]
+    return scorer.score(
+        detour_minutes=detour_minutes,
+        poi_quality=sum(qualities) / len(qualities),
+        tag_affinity=sum(affinities) / len(affinities),
+    )
+
+
+def _waypoint_highlights(chosen: dict, baseline: dict) -> list[dict]:
+    """把真正参与规划的途经点按访问顺序返回，并生成可核实的推荐理由。"""
+    highlights = []
+    route = chosen["route"]
+    for index, item in enumerate(chosen.get("items") or [chosen], start=1):
+        poi = item["poi"]
+        location = poi.get("navigation_location") or poi.get("location")
+        baseline_offset = point_to_route_meters(location, baseline.get("polyline"))
+        route_offset = point_to_route_meters(location, route.get("polyline"))
+        enriched = {
+            **poi,
+            "visit_order": index,
+            "is_waypoint": True,
+            "baseline_offset_meters": baseline_offset,
+            "off_route_meters": route_offset,
+        }
+        enriched["introduction"] = _poi_introduction(enriched)
+        enriched["reason"] = _poi_reason(enriched)
+        highlights.append(enriched)
+    return highlights
+
+
+def _poi_introduction(poi: dict) -> str:
+    parts = []
+    poi_type = str(poi.get("type") or "").split(";")
+    readable_type = next((part for part in reversed(poi_type) if part and not part.endswith("服务")), "")
+    if readable_type:
+        parts.append(readable_type)
+    if poi.get("address"):
+        parts.append(str(poi["address"]))
+    return " · ".join(parts)
+
+
+def _poi_reason(poi: dict) -> str:
+    facts = []
+    rating = _normalize_rating(poi.get("rating", 0))
+    if rating > 0:
+        facts.append(f"高德评分 {rating:.1f}")
+    else:
+        facts.append("高德暂无评分")
+    offset = poi.get("baseline_offset_meters")
+    if isinstance(offset, (int, float)) and math.isfinite(offset):
+        facts.append(f"距原本路线约 {round(offset)} 米")
+    poi_type = str(poi.get("type") or "").split(";")[-1].strip()
+    if poi_type:
+        facts.append(poi_type)
+    return "，".join(facts)
 
 
 def _normalize_rating(value) -> float:
@@ -501,12 +754,12 @@ def read_preference():
 @router.get("/place/suggest", response_model=None)
 def suggest_places(
     keyword: str = Query(..., min_length=1),
-    city: str = Query("大连"),
+    city: str = Query(""),
 ):
     """地点联想，转发高德 /v3/assistant/inputtips。
 
-    没有 AMAP_KEY 或高德出错时返回空列表 —— 输入框退化成纯文本输入，
-    这比抛 500 让前端弹错误提示好。
+    正式联调不再把配置错误和高德故障伪装成「没有结果」：缺 Key 返回 503，
+    上游失败返回 502。city 为空时全国搜索，传入城市时才严格限制城市。
     """
     keyword = keyword.strip()
     if not keyword:
@@ -514,17 +767,27 @@ def suggest_places(
 
     amap_key = os.getenv("AMAP_KEY")
     if not amap_key:
-        return {"suggestions": []}
+        raise HTTPException(status_code=503, detail="真实高德地点联想服务未配置")
 
-    params = {"keywords": keyword, "city": city, "citylimit": "true", "key": amap_key}
+    params = {"keywords": keyword, "key": amap_key}
+    if city.strip():
+        params.update({"city": city.strip(), "citylimit": "true"})
 
     try:
         throttle_amap()
         response = requests.get(INPUTTIPS_URL, params=params, timeout=5)
         response.raise_for_status()
         data = response.json()
-    except (requests.RequestException, TypeError, ValueError, AttributeError):
-        return {"suggestions": []}
+    except (requests.RequestException, TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=502, detail=f"高德地点联想失败：{exc}") from exc
+
+    if not isinstance(data, dict) or str(data.get("status")) != "1":
+        info = data.get("info") if isinstance(data, dict) else "响应格式错误"
+        infocode = data.get("infocode") if isinstance(data, dict) else ""
+        raise HTTPException(
+            status_code=502,
+            detail=f"高德地点联想失败：{info or '未知错误'} ({infocode})",
+        )
 
     tips = data.get("tips", []) if isinstance(data, dict) else []
     return {"suggestions": [tip for tip in map(_normalize_tip, tips) if tip]}
@@ -554,7 +817,9 @@ def _normalize_tip(tip) -> dict | None:
     address = tip.get("address")
 
     return {
+        "id": tip.get("id") if isinstance(tip.get("id"), str) else "",
         "name": name.strip(),
+        "typecode": tip.get("typecode") if isinstance(tip.get("typecode"), str) else "",
         "address": address if isinstance(address, str) else "",
         "district": district if isinstance(district, str) else "",
         "location": location,

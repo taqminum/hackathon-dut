@@ -35,6 +35,7 @@ describe('recommendRoute', () => {
       origin: '大连理工大学',
       destination: '星海广场',
       mode: '+15',
+      poi_count: 1,
     })
   })
 
@@ -116,13 +117,13 @@ describe('suggestPlaces', () => {
     )
 
     await expect(api.suggestPlaces({ keyword: '星海' })).resolves.toEqual([
-      { name: '星海广场', address: '沙河口区', location: '121.5854,38.9325' },
+      { id: '', name: '星海广场', address: '沙河口区', location: '121.5854,38.9325' },
     ])
   })
 
-  it('degrades to an empty list on failure', async () => {
+  it('surfaces a real suggestion service failure', async () => {
     const api = createRecommendApi(async () => fail(500))
-    await expect(api.suggestPlaces({ keyword: '星海' })).resolves.toEqual([])
+    await expect(api.suggestPlaces({ keyword: '星海' })).rejects.toThrow('地点联想失败')
   })
 })
 

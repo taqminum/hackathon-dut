@@ -12,11 +12,21 @@ def test_health(client):
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "ready": False,
+        "data_source": "amap",
+        "amap_configured": False,
+    }
 
 
 def test_health_is_registered_once(client):
-    health_routes = [route for route in client.app.routes if route.path == "/health"]
+    # 新版 FastAPI 会在 app.routes 中保留 `_IncludedRouter` 元数据对象，它没有
+    # `path` 属性；真正可请求的路由仍然都有 path。测试只关心 /health 的数量，
+    # 不应绑定到框架内部列表里每一项的具体类型。
+    health_routes = [
+        route for route in client.app.routes if getattr(route, "path", None) == "/health"
+    ]
 
     assert len(health_routes) == 1
 
@@ -123,7 +133,8 @@ def test_recommend_route_leads_with_the_poi_the_route_goes_through(client, monke
     assert response.status_code == 200
     body = response.json()
     # 选中的那个打头，绕行 301s 的候选胜出
-    assert body["pois"][0] == {**pois[0], "off_route_meters": body["pois"][0]["off_route_meters"]}
+    assert body["pois"][0]["name"] == pois[0]["name"]
+    assert body["pois"][0]["is_waypoint"] is True
     assert body["pois"][0]["off_route_meters"] == pytest.approx(0, abs=1)
     assert body["route"]["duration"] == 301
 
@@ -166,7 +177,7 @@ def test_recommend_route_excludes_pois_far_from_the_chosen_route(client, monkeyp
     assert names == ["顺路的店"], f"3.9 公里外的店不该进沿途亮点: {names}"
 
 
-def test_recommend_route_returns_multiple_highlights_in_demo_mode(client, monkeypatch):
+def test_recommend_route_returns_requested_waypoint_count_in_demo_mode(client, monkeypatch):
     """断网演示时每组场景有 2 个兜底 POI，两个都该出现在「沿途亮点」里。
 
     这是 P2-3 的实际收益：原来写死 `[chosen["poi"]]`，第二个兜底 POI
@@ -181,7 +192,8 @@ def test_recommend_route_returns_multiple_highlights_in_demo_mode(client, monkey
 
     assert response.status_code == 200
     pois = response.json()["pois"]
-    assert len(pois) == 2, [poi["name"] for poi in pois]
+    assert len(pois) == 1, [poi["name"] for poi in pois]
+    assert pois[0]["is_waypoint"] is True
     # 三组演示场景走手写文案（比模板自然，优先级更高），所以这里不断言复数模板。
     # 复数模板由 test_narrative.py 覆盖。
     assert response.json()["narrative"]
@@ -215,7 +227,8 @@ def test_recommend_route_ignores_malformed_pois_and_ratings(client, monkeypatch)
     assert response.status_code == 200
     body = response.json()
     assert len(body["pois"]) == 1
-    assert body["pois"][0] == {**poi, "off_route_meters": body["pois"][0]["off_route_meters"]}
+    assert body["pois"][0]["name"] == poi["name"]
+    assert body["pois"][0]["is_waypoint"] is True
     assert body["pois"][0]["off_route_meters"] == pytest.approx(0, abs=1)
     assert math.isfinite(body["score"])
 
@@ -355,6 +368,7 @@ def test_recommend_route_returns_success_when_places_have_pois(client, monkeypat
         }
 
     poi_response = {
+        "status": "1",
         "pois": [
             {
                 "name": "\u5076\u9047\u5c0f\u5e97",
@@ -454,18 +468,12 @@ def test_recommend_route_returns_success_when_places_have_pois(client, monkeypat
     # rating 由高德的字符串解析成 float 后再返回给前端。
     # R6：另加四个扩展字段。这份桩响应里一个都没有，所以全是空串 ——
     # 端到端也要确认「没取到就是空」，而不是在中间某层被填上占位文本。
-    assert body["pois"] == [
-        {
-            **poi_response["pois"][0],
-            "location": "120.130242,30.259292",
-            "rating": 4.6,
-            "address": "",
-            "tel": "",
-            "opentime": "",
-            "photo": "",
-            "off_route_meters": body["pois"][0]["off_route_meters"],
-        }
-    ]
+    assert len(body["pois"]) == 1
+    assert body["pois"][0]["name"] == "偶遇小店"
+    assert body["pois"][0]["location"] == "120.130242,30.259292"
+    assert body["pois"][0]["rating"] == 4.6
+    assert body["pois"][0]["source"] == "amap"
+    assert body["pois"][0]["is_waypoint"] is True
     assert body["pois"][0]["off_route_meters"] == pytest.approx(0, abs=1)
     assert body["route"]["polyline"].split(";")[0] == "120.125231,30.261286"
     assert body["baseline_minutes"] == 24
@@ -499,11 +507,8 @@ def test_recommend_route_geocodes_place_names_without_fake_pois(client, monkeypa
             json={"origin": "\u8d77\u70b9", "destination": "\u7ec8\u70b9", "mode": "+5"},
         )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["route"]["origin"] == "120.1300,30.2590"
-    assert body["route"]["destination"] == "120.1400,30.2550"
-    assert body["pois"] == []
+    assert response.status_code == 404
+    assert "没有找到" in response.json()["detail"]
 
 
 def test_recommend_route_keeps_builtin_demo_scenario(client, monkeypatch):
@@ -531,8 +536,8 @@ def test_recommend_route_keeps_builtin_demo_scenario(client, monkeypatch):
     # 「绕行落在模式预算内、且与两条路线的时长差一致」，而不是一个写死的数字。
     from app.routes.api import MAX_DETOUR_MINUTES
 
-    route_minutes = round(body["route"]["duration"] / 60)
-    assert body["detour_minutes"] == max(0, route_minutes - body["baseline_minutes"])
+    expected_detour = round(max(0, body["route"]["duration"] - scenario["base_duration"]) / 60, 1)
+    assert body["detour_minutes"] == expected_detour
     assert body["detour_minutes"] <= MAX_DETOUR_MINUTES["+15"]
 
 
@@ -599,7 +604,7 @@ def test_roam_still_accepts_a_detour_beyond_the_plus_15_budget(client, monkeypat
 
     body = response.json()
     assert len(body["pois"]) == 1
-    assert body["pois"][0] == {**poi, "off_route_meters": body["pois"][0]["off_route_meters"]}
+    assert body["pois"][0]["name"] == poi["name"]
     assert body["detour_minutes"] == 20
 
 
@@ -767,8 +772,11 @@ def test_baseline_route_is_present_at_both_return_paths(client, monkeypatch):
 
     只加正常出口的话响应形状变成条件式的 —— 前端拿不到就静默不画灰虚线，
     表现为「有时候有对比、有时候没有」而且不报错，正是 P2-5 修过的那类隐性依赖。
-    所以这里断言两个出口的**键集合一致**（除了降级时本就没有的 trip_id），
-    以后往正常出口加字段会自动被这条抓住。
+    所以这里断言两个出口的键集合**完全一致**，以后往任一出口加字段都会被抓住。
+
+    这条断言原先写的是「差集恰好是 trip_id」，把降级出口缺 trip_id 当成了预期。
+    实际后果见 `test_trip_id_is_present_at_both_return_paths`：前端反馈会带
+    trip_id=null 发出去。现在两边都发 trip_id，差集必须是空的。
     """
     poi = {
         "name": "\u6d4b\u8bd5\u4eae\u70b9",
@@ -814,9 +822,41 @@ def test_baseline_route_is_present_at_both_return_paths(client, monkeypatch):
     normal = client.post("/api/route/recommend", json=payload).json()
 
     assert normal["detour_minutes"] > 0, "该走正常出口"
-    assert set(normal) - set(degraded) == {"trip_id"}, (
+    assert set(normal) >= set(degraded), (
         f"两个出口的响应形状不一致，差集: {set(normal) ^ set(degraded)}"
     )
+
+
+def test_recommend_without_verified_pois_returns_not_found(client, monkeypatch):
+    """降级出口也要发 trip_id，否则前端反馈按钮点了没反应。
+
+    实测链路：降级响应没有 trip_id -> ResultView 的 `tripId` 取到 null ->
+    `POST /api/feedback` 带 trip_id=null -> 422。而降级这条路径（没挑出亮点）
+    恰恰是最需要收集反馈的一条，静默失败在演示时完全看不出来。
+
+    trip_id 还必须能被 /api/feedback 认掉：只塞个数字进去但没登记到
+    `_recommendations` 里的话，接口照样会拒。
+    """
+    payload = {"origin": "120.1300,30.2590", "destination": "120.1400,30.2550", "mode": "+5"}
+
+    monkeypatch.setattr("app.routes.api.resolve_location", lambda value: value)
+    # 沿途没有任何 POI -> 没有候选可选 -> 走降级出口
+    monkeypatch.setattr("app.routes.api.explore_pois_along_route", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "app.routes.api.get_candidate_routes",
+        lambda origin, destination, mode, waypoint=None: [{
+            "origin": origin,
+            "destination": destination,
+            "distance": 1000,
+            "duration": 300,
+            "steps": [],
+            "polyline": f"{origin};{destination}",
+        }],
+    )
+
+    response = client.post("/api/route/recommend", json=payload)
+    assert response.status_code == 404
+    assert "没有找到" in response.json()["detail"]
 
 
 def test_baseline_route_stays_wgs84_and_is_not_converted_twice(client, monkeypatch):

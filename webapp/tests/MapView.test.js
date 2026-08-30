@@ -131,9 +131,9 @@ describe('MapView', () => {
 
   const TWO_POIS = [
     // 第一个是候选路线真的穿过的途经点
-    { name: '路上那家店', type: '餐饮', location: '121.5310,38.8878', off_route_meters: 2 },
+    { name: '路上那家店', type: '餐饮', location: '121.5310,38.8878', off_route_meters: 2, is_waypoint: true },
     // 第二个只是在旁边
-    { name: '旁边那家店', type: '餐饮', location: '121.5561,38.8845', off_route_meters: 130 },
+    { name: '旁边那家店', type: '餐饮', location: '121.5561,38.8845', off_route_meters: 130, is_waypoint: false },
   ]
 
   it('draws the waypoint with a different marker than the nearby highlights', () => {

@@ -31,3 +31,29 @@ def landmark(slug: str) -> str:
 def scenario_key(origin_slug: str, destination_slug: str) -> str:
     """兜底表的 key。三张表都用这个函数生成，不再各写一遍字面量。"""
     return f"{landmark(origin_slug)}->{landmark(destination_slug)}"
+
+
+# 地名 -> slug。演示场景的六个地标必须能离线解析成**与兜底表 key 完全一致**的
+# 坐标，否则手打地名会绕不进演示数据（详见 `geocoder.resolve_landmark`）。
+# 别名只收真正会被打出来的简称，不做模糊匹配 —— 模糊匹配会把「大连火车站」
+# 匹到「大连理工大学」，错误解析比解析不出来更难查。
+LANDMARK_ALIASES: dict[str, str] = {
+    "大连理工大学": "dut",
+    "大连理工": "dut",
+    "大工": "dut",
+    "星海广场": "xinghai",
+    "星海": "xinghai",
+    "东港商务区": "donggang",
+    "东港": "donggang",
+    "老虎滩海洋公园": "laohutan",
+    "老虎滩": "laohutan",
+    "西安路": "xianlu",
+    "傅家庄公园": "fujiazhuang",
+    "傅家庄": "fujiazhuang",
+}
+
+
+def landmark_slug(name: str | None) -> str | None:
+    """地名 -> slug，精确匹配（去空白）。认不出返回 None，由调用方继续兜底。"""
+    key = str(name or "").strip()
+    return LANDMARK_ALIASES.get(key)

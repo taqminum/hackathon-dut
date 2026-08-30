@@ -38,8 +38,9 @@ describe('HomeView', () => {
   it('renders the inputs, mode selector and demo shortcuts', () => {
     const wrapper = mountHome(makeApi())
 
-    expect(wrapper.findAll('input')).toHaveLength(2)
+    expect(wrapper.findAll('input[type="text"]')).toHaveLength(2)
     expect(wrapper.findAll('[role="radio"]')).toHaveLength(3)
+    expect(wrapper.findAll('input[type="radio"]')).toHaveLength(3)
     expect(wrapper.findAll('.demo')).toHaveLength(3)
   })
 
@@ -69,6 +70,7 @@ describe('HomeView', () => {
       origin: '大连理工大学',
       destination: '星海广场',
       mode: '+5',
+      poiCount: 1,
     })
 
     const emitted = wrapper.emitted('select')
@@ -139,8 +141,23 @@ describe('HomeView', () => {
       origin: '121.5197,38.8856',
       destination: '121.5839,38.8816',
       mode: '+15',
+      poiCount: 1,
     })
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['+15'])
+  })
+
+  it('submits the selected number of real waypoints', async () => {
+    const api = makeApi()
+    const wrapper = mountHome(api)
+
+    await wrapper.findAll('input[type="text"]')[0].setValue('大连理工大学')
+    await wrapper.findAll('input[type="text"]')[1].setValue('星海广场')
+    await wrapper.findAll('input[type="radio"]')[1].setValue()
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.recommendRoute).toHaveBeenCalledWith(expect.objectContaining({ poiCount: 2 }))
+    expect(wrapper.emitted('select')[0][0].request.poiCount).toBe(2)
   })
 
   // R2：一键体验过去把坐标灌回输入框，用户看到的是「121.5197,38.8856」。
