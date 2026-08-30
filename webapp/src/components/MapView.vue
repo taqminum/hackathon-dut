@@ -36,7 +36,34 @@ let casingLayer = null
 let routeLayer = null
 const baselineLayers = []
 const markers = []
+
+/** 底图源按可达性排序。实测 OSM 在部分网络（尤其大陆）会整体超时，
+ * 所以主源用高德栅格瓦片，失败时按顺序自动换源重试，不再让地图变回一片灰。 */
+const TILE_PROVIDERS = [
+  {
+    id: 'amap',
+    url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+    attribution: '&copy; 高德地图',
+    options: { subdomains: ['1', '2', '3', '4'], maxNativeZoom: 18, maxZoom: 19 },
+  },
+  {
+    id: 'esri',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: '&copy; Esri &mdash; Source: Esri',
+    options: { maxZoom: 19 },
+  },
+  {
+    id: 'osm',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
+    options: { maxZoom: 19 },
+  },
+]
+
+let tiles = null
+let providerIndex = 0
 let tileErrors = 0
+let tileSuccesses = 0
 /** 已经按这个形状取过视野了。POI 点击不改形状，就不该重新 fitBounds ——
  * 否则用户手动放大看某个路口，点一下亮点卡片视野就被拽回全程，地图像不听话。 */
 let fittedSignature = ''
@@ -211,6 +238,55 @@ function renderRouteAndPois() {
   if (activeLatLng) call(map, 'panTo', activeLatLng, { animate: true })
 }
 
+/** 当前源一整批失败时切到下一个源重试；最后一个源失败就保留 UI 上的失败提示。 */
+function switchTileProvider() {
+  providerIndex += 1
+  if (providerIndex >= TILE_PROVIDERS.length) return
+  if (tiles) call(tiles, 'remove')
+  tiles = null
+  attachTileProvider()
+}
+
+function attachTileProvider() {
+  if (!has('tileLayer') || !map) return
+  const provider = TILE_PROVIDERS[providerIndex]
+  if (!provider) return
+
+  tilesReady.value = false
+  tilesFailed.value = false
+  tileErrors = 0
+  tileSuccesses = 0
+
+  tiles = L.tileLayer(provider.url, {
+    attribution: provider.attribution,
+    ...provider.options,
+  })
+  // T2：订阅瓦片事件，界面才能区分「正在加载」「加载完」「下不来」。
+  // 以前一个都没订阅，三种状态在屏幕上长得一模一样（一块灰）。
+  //
+  // 成功信号必须用 tileload（单张加载成功），不能用 load。Leaflet 的 load 是
+  // 「这一批都处理完了」，出错的瓦片也算处理完 —— 实测把瓦片全 abort 掉，
+  // load 照样触发，于是骨架撤了、错误提示也不出，屏幕上又变回一块灰。
+  call(tiles, 'on', 'tileload', () => {
+    tileSuccesses += 1
+    // 第一张真的解码成功才撤骨架；一张成功不代表整块底图都好了，
+    // 所以失败提示要等成功数明显超过错误数才清。
+    if (tileSuccesses >= 1) tilesReady.value = true
+    if (tileSuccesses >= 3 && tileSuccesses >= tileErrors) tilesFailed.value = false
+  })
+  call(tiles, 'on', 'tileerror', () => {
+    tileErrors += 1
+    // 单张瓦片偶尔失败很常见（限流 / 404），不该马上报错。
+    // 连续几张都下不来才算底图真的没了。
+    if (!tilesReady.value && tileErrors >= 4) tilesFailed.value = true
+    // 当前源一整批都下不来时自动切下一个源重试。
+    if (!tilesReady.value && tileErrors >= 6 && providerIndex < TILE_PROVIDERS.length - 1) {
+      switchTileProvider()
+    }
+  })
+  call(tiles, 'addTo', map)
+}
+
 function initMap() {
   if (!container.value || map) return
 
@@ -218,29 +294,7 @@ function initMap() {
     map = L.map(container.value, { zoomControl: true, attributionControl: true })
     call(map, 'setView', [MAP_CENTER.lat, MAP_CENTER.lng], MAP_ZOOM)
 
-    if (has('tileLayer')) {
-      const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors',
-        maxZoom: 19,
-      })
-      // T2：订阅瓦片事件，界面才能区分「正在加载」「加载完」「下不来」。
-      // 以前一个都没订阅，三种状态在屏幕上长得一模一样（一块灰）。
-      //
-      // 成功信号必须用 tileload（单张加载成功），不能用 load。Leaflet 的 load 是
-      // 「这一批都处理完了」，出错的瓦片也算处理完 —— 实测把瓦片全 abort 掉，
-      // load 照样触发，于是骨架撤了、错误提示也不出，屏幕上又变回一块灰。
-      call(tiles, 'on', 'tileload', () => {
-        tilesReady.value = true
-        tilesFailed.value = false
-      })
-      call(tiles, 'on', 'tileerror', () => {
-        tileErrors += 1
-        // 单张瓦片偶尔失败很常见（OSM 限流），不该马上报错。
-        // 连续几张都下不来才算底图真的没了。
-        if (tileErrors >= 4 && !tilesReady.value) tilesFailed.value = true
-      })
-      call(tiles, 'addTo', map)
-    }
+    if (has('tileLayer')) attachTileProvider()
 
     renderRouteAndPois()
   } catch {

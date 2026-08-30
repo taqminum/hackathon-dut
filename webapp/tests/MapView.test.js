@@ -295,6 +295,24 @@ describe('MapView', () => {
     expect(wrapper.find('.map-container').exists()).toBe(true)
   })
 
+  it('starts with AMap tiles and switches to ESRI after a full failure', async () => {
+    // OSM 在部分网络（尤其大陆）会整体超时。主源必须是国内可达的高德栅格瓦片，
+    // 而且连续失败后要自动换下一个源，不能停在「加载中」或一片灰。
+    const wrapper = mount(MapView, { props: { route: { polyline: RECOMMENDED } } })
+
+    const [primaryUrl, primaryOptions] = L.tileLayer.mock.calls[0]
+    expect(primaryUrl).toContain('is.autonavi.com')
+    expect(primaryOptions.subdomains).toEqual(['1', '2', '3', '4'])
+
+    const onError = tileHandler('tileerror')
+    for (let i = 0; i < 6; i += 1) onError?.()
+    await wrapper.vm.$nextTick()
+
+    expect(L.tileLayer.mock.calls[1][0]).toContain('arcgisonline.com')
+    // 换源是一次新的尝试，界面回到「加载中」而不是挂着上一源的失败提示
+    expect(wrapper.find('.map__skeleton-text').exists()).toBe(true)
+  })
+
   it('pans to the active poi without refitting the viewport', async () => {
     // 用户手动放大看某个路口，点一下亮点卡片 —— 以前 deep watch 会重跑
     // fitBounds，把视野拽回全程，地图像不听话。平移可以，改缩放不行。

@@ -310,26 +310,35 @@ try {
     }
 
     // 拖拽 / 缩放必须真的能用 —— 「死的」很大一部分是没人验证过交互。
-    // 缩放层级从瓦片 URL 的 /{z}/ 读，比翻 Leaflet 内部字段稳。
+    // 缩放层级从瓦片 URL 读：兼容 /z/x/y.png（OSM / ESRI）与高德的 x=..&y=..&z=..。
     const readZoom = () =>
       page.evaluate(() => {
         const img = document.querySelector('.leaflet-tile-pane img')
-        const match = img?.getAttribute('src')?.match(/\/(\d+)\/\d+\/\d+\.png/)
-        return match ? Number(match[1]) : null
+        const src = img?.getAttribute('src') || ''
+        const slash = src.match(/\/(\d+)\/\d+\/\d+\.png/)
+        if (slash) return Number(slash[1])
+        const query = src.match(/[?&]z=(\d+)/)
+        return query ? Number(query[1]) : null
       })
 
     // fitBounds 的缩放动画期间新旧层级的瓦片同时在 DOM 里，这时读出来的 z 不稳。
     // 等到只剩一个层级再取基线，否则会出现「12 -> 15」这种假失败。
     const settleZoom = async () => {
       for (let i = 0; i < 20; i += 1) {
-        const levels = await page.evaluate(
-          () =>
-            new Set(
-              [...document.querySelectorAll('.leaflet-tile-pane img')]
-                .map((img) => (img.getAttribute('src')?.match(/\/(\d+)\/\d+\/\d+\.png/) || [])[1])
-                .filter(Boolean),
-            ).size,
-        )
+        const levels = await page.evaluate(() => {
+          const zoomOf = (src) => {
+            if (!src) return null
+            const slash = src.match(/\/(\d+)\/\d+\/\d+\.png/)
+            if (slash) return Number(slash[1])
+            const query = src.match(/[?&]z=(\d+)/)
+            return query ? Number(query[1]) : null
+          }
+          return new Set(
+            [...document.querySelectorAll('.leaflet-tile-pane img')]
+              .map((img) => zoomOf(img.getAttribute('src')))
+              .filter((z) => z !== null),
+          ).size
+        })
         if (levels === 1) return
         await page.waitForTimeout(300)
       }
@@ -779,7 +788,7 @@ try {
     await page.unroute('**/api/route/recommend')
 
     const realErrors = consoleErrors.filter(
-      (text) => !/tile\.openstreetmap|ERR_|net::|Failed to load resource/i.test(text),
+      (text) => !/tile\.openstreetmap|is\.autonavi|arcgisonline|ERR_|net::|Failed to load resource/i.test(text),
     )
     check('无脚本报错', realErrors.length === 0, realErrors.join(' | '))
 
