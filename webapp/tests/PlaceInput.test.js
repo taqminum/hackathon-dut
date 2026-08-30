@@ -24,22 +24,31 @@ describe('PlaceInput', () => {
     expect(wrapper.emitted('update:modelValue')).toEqual([['星海']])
   })
 
-  it('falls back to local landmarks when there is no suggest api', async () => {
+  it('does not invent local suggestions when there is no real suggest api', async () => {
     const wrapper = mountInput({ modelValue: '星海' })
     await wrapper.find('input').trigger('focus')
 
-    const options = wrapper.findAll('[role="option"]')
-    expect(options.length).toBeGreaterThan(0)
-    expect(options[0].text()).toContain('星海广场')
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('高德没有找到匹配地点')
   })
 
-  it('fills the coordinate when picking a landmark', async () => {
-    const wrapper = mountInput({ modelValue: '星海' })
+  // R3：改过来了 —— 选中回填的是地名，坐标走 `pick`。
+  // 原来这条断言把「输入框里显示经纬度」锁成了预期行为，和 R2 修的是同一个毛病。
+  it('fills the place name when picking a landmark and hands the coordinate to the parent', async () => {
+    const suggestion = { name: '星海广场', address: '沙河口区', location: '121.5839,38.8816' }
+    const wrapper = mountInput({
+      suggestFn: vi.fn(async () => [suggestion]),
+    })
+    await wrapper.setProps({ modelValue: '星海' })
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    await flushPromises()
     await wrapper.find('input').trigger('focus')
     await wrapper.findAll('[role="option"]')[0].trigger('mousedown')
 
-    expect(wrapper.emitted('update:modelValue')).toEqual([['121.5854,38.9325']])
+    expect(wrapper.emitted('update:modelValue')).toEqual([['星海广场']])
+    // 坐标没丢，只是换了出口：上层从 pick 里取，存进 originCoord 提交时用
     expect(wrapper.emitted('pick')[0][0].name).toBe('星海广场')
+    expect(wrapper.emitted('pick')[0][0].location).toBe('121.5839,38.8816')
   })
 
   it('uses remote suggestions when the api returns results', async () => {
@@ -57,7 +66,7 @@ describe('PlaceInput', () => {
     expect(wrapper.text()).toContain('远端结果')
   })
 
-  it('degrades to local matches when the suggest api throws', async () => {
+  it('shows the real suggestion error instead of local fake matches', async () => {
     const suggestFn = vi.fn(async () => {
       throw new Error('offline')
     })
@@ -68,7 +77,8 @@ describe('PlaceInput', () => {
     await flushPromises()
     await wrapper.find('input').trigger('focus')
 
-    expect(wrapper.text()).toContain('星海广场')
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('offline')
   })
 
   it('skips the suggest call for coordinate input and shows the coordinate hint', async () => {
@@ -84,21 +94,36 @@ describe('PlaceInput', () => {
   })
 
   it('supports keyboard navigation and selection', async () => {
-    const wrapper = mountInput({ modelValue: '星海' })
+    const wrapper = mountInput({
+      suggestFn: vi.fn(async () => [
+        { name: '星海广场', address: '沙河口区', location: '121.5839,38.8816' },
+      ]),
+    })
     const input = wrapper.find('input')
 
+    await wrapper.setProps({ modelValue: '星海' })
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    await flushPromises()
     await input.trigger('focus')
     await input.trigger('keydown', { key: 'ArrowDown' })
     expect(wrapper.find('.place__option--active').exists()).toBe(true)
 
     await input.trigger('keydown', { key: 'Enter' })
-    expect(wrapper.emitted('update:modelValue')).toEqual([['121.5854,38.9325']])
+    expect(wrapper.emitted('update:modelValue')).toEqual([['星海广场']])
+    expect(wrapper.emitted('pick')[0][0].location).toBe('121.5839,38.8816')
   })
 
   it('closes the list on escape', async () => {
-    const wrapper = mountInput({ modelValue: '星海' })
+    const wrapper = mountInput({
+      suggestFn: vi.fn(async () => [
+        { name: '星海广场', address: '沙河口区', location: '121.5839,38.8816' },
+      ]),
+    })
     const input = wrapper.find('input')
 
+    await wrapper.setProps({ modelValue: '星海' })
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    await flushPromises()
     await input.trigger('focus')
     expect(wrapper.findAll('[role="option"]').length).toBeGreaterThan(0)
 

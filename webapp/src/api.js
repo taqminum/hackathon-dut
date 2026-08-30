@@ -1,22 +1,21 @@
 /**
  * 后端接口封装。
  *
- * 已实现的接口：
+ * 已由后端确定的接口：
  *   GET  /health
- *   GET  /api/place/suggest?keyword=&city=   地点联想
  *   POST /api/route/recommend  { origin, destination, mode } ->
  *        { baseline_minutes, detour_minutes, score, pois, narrative, route }
  *
- * 以下接口后端已声明但尚未实现（统一返回 501），前端按使用意图先写好请求；
+ * 以下接口后端尚未定稿，前端按使用意图先写好请求；
  * 拿不到响应时统一降级，不阻塞主流程（见 withFallback）。
- *   GET  /api/poi/:id                        POI 详情
+ *   GET  /api/place/suggest?keyword=&city=   地点联想
  *   POST /api/trip/save                      收藏路线
  *   GET  /api/trip/list                      收藏列表
  *   POST /api/feedback                       路线反馈（喜欢 / 不喜欢）
  */
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
-const DEFAULT_TIMEOUT = 20000
+const DEFAULT_TIMEOUT = 60000
 
 function base() {
   return API_BASE.replace(/\/$/, '')
@@ -41,22 +40,43 @@ function withTimeout(client, url, options = {}, timeout = DEFAULT_TIMEOUT) {
   )
 }
 
+/**
+ * T8-3：把「请求根本没走通」翻译成人话。
+ *
+ * `fetch` 连不上时抛的是 `TypeError: Failed to fetch`（超时被 AbortController
+ * 掐断时是 `AbortError`），HomeView 直接把 `err.message` 印在红条上 ——
+ * 屏幕上就是一行英文 `Failed to fetch`，用户不知道是后端没起、还是自己填错了。
+ *
+ * 只翻译**传输层**失败。HTTP 状态码带回来的 `detail` 是后端写给用户看的中文，
+ * 必须原样透传 —— 把 404「未找到可行路线」说成「连不上后端」是更坏的谎。
+ * 两重保障：调用点只在包住 `fetch` 的 try 里用它（`parse` 在 try 之外），
+ * 且认不出的 error 一律原样返回，不套模板。
+ */
+function humanizeTransportError(error, fallbackMessage) {
+  const name = error?.name || ''
+  const message = String(error?.message || '')
+  if (name === 'AbortError' || /aborted/i.test(message)) {
+    return new Error('请求超时，后端没有在预期时间内响应，请稍后重试')
+  }
+  if (error instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(message)) {
+    return new Error('连不上后端服务，请确认后端已启动后重试')
+  }
+  return error instanceof Error ? error : new Error(message || fallbackMessage)
+}
+
 /** 统一解析响应，失败时抛出后端 detail 文案 */
 async function parse(response, fallbackMessage) {
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}))
-    const detail = errorBody.detail
-    const message = typeof detail === 'string' ? detail : detail?.message || fallbackMessage
-    const error = new Error(message)
+    const error = new Error(errorBody.detail || fallbackMessage)
     error.status = response.status
-    error.detail = detail
     throw error
   }
 
   return response.json()
 }
 
-/** 未实现或可选接口的降级包装：失败就返回兜底值，不把异常抛给界面 */
+/** 未定稿接口的降级包装：失败就返回兜底值，不把异常抛给界面 */
 async function withFallback(promiseFactory, fallbackValue) {
   try {
     return await promiseFactory()
@@ -68,12 +88,18 @@ async function withFallback(promiseFactory, fallbackValue) {
 /**
  * 推荐路线。core 接口，失败必须抛出，让界面显示错误态。
  */
-export async function recommendRoute({ origin, destination, mode }, client = globalThis.fetch) {
-  const response = await withTimeout(client, buildUrl('/route/recommend'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ origin, destination, mode }),
-  })
+export async function recommendRoute({ origin, destination, mode, poiCount = 1 }, client = globalThis.fetch) {
+  let response
+  try {
+    response = await withTimeout(client, buildUrl('/route/recommend'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin, destination, mode, poi_count: poiCount }),
+    })
+  } catch (error) {
+    // 只包传输层失败。`parse` 在这个 try 之外，后端的中文 detail 不会经过这里。
+    throw humanizeTransportError(error, '推荐接口请求失败')
+  }
 
   return parse(response, '推荐接口请求失败')
 }
@@ -88,53 +114,40 @@ export async function checkHealth(client = globalThis.fetch) {
       5000,
     )
     const data = await parse(response, '健康检查失败')
-    return { online: data?.status === 'ok', detail: data }
+    return { online: data?.status === 'ok' && data?.ready !== false, detail: data }
   }, { online: false, detail: null })
 }
 
-/** 地点联想。已实现接口；失败仍返回空数组，输入框退化为纯文本输入 */
-export async function suggestPlaces({ keyword, city = '大连' }, client = globalThis.fetch) {
+/** 地点联想。后端未定稿，失败返回空数组，输入框退化为纯文本输入 */
+export async function suggestPlaces({ keyword, city = '' }, client = globalThis.fetch) {
   if (!keyword || !keyword.trim()) return []
 
-  return withFallback(async () => {
-    const query = new URLSearchParams({ keyword: keyword.trim(), city })
-    const response = await withTimeout(
+  const query = new URLSearchParams({ keyword: keyword.trim() })
+  if (city) query.set('city', city)
+  let response
+  try {
+    response = await withTimeout(
       client,
       `${buildUrl('/place/suggest')}?${query.toString()}`,
       { method: 'GET' },
-      6000,
-    )
-    const data = await parse(response, '地点联想失败')
-    const list = Array.isArray(data) ? data : data?.suggestions || data?.tips || []
-    return list
-      .map((item) => ({
-        name: item.name || item.title || '',
-        address: item.address || item.district || '',
-        location: item.location || item.coord || '',
-        type: item.type || '',
-        coordinate_system: item.coordinate_system || '',
-        confidence: typeof item.confidence === 'number' ? item.confidence : null,
-      }))
-      .filter((item) => item.name)
-  }, [])
-}
-
-/** POI 详情。后端尚未实现（501），失败返回 null，界面只展示列表里已有的字段 */
-export async function fetchPoiDetail(poiId, client = globalThis.fetch) {
-  if (!poiId) return null
-
-  return withFallback(async () => {
-    const response = await withTimeout(
-      client,
-      buildUrl(`/poi/${encodeURIComponent(poiId)}`),
-      { method: 'GET' },
       8000,
     )
-    return parse(response, 'POI 详情获取失败')
-  }, null)
+  } catch (error) {
+    throw humanizeTransportError(error, '地点联想失败')
+  }
+  const data = await parse(response, '地点联想失败')
+  const list = Array.isArray(data) ? data : data?.suggestions || data?.tips || []
+  return list
+    .map((item) => ({
+      id: item.id || '',
+      name: item.name || item.title || '',
+      address: item.address || item.district || '',
+      location: item.location || item.coord || '',
+    }))
+    .filter((item) => item.name)
 }
 
-/** 收藏当前路线。后端尚未实现（501），失败返回 { ok: false } 让界面提示稍后重试 */
+/** 收藏当前路线。后端未定稿，失败返回 { ok: false } 让界面提示稍后重试 */
 export async function saveTrip(payload, client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/trip/save'), {
@@ -147,7 +160,7 @@ export async function saveTrip(payload, client = globalThis.fetch) {
   }, { ok: false })
 }
 
-/** 收藏列表。后端尚未实现（501），失败返回空数组 */
+/** 收藏列表。后端未定稿，失败返回空数组 */
 export async function listTrips(client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/trip/list'), { method: 'GET' }, 8000)
@@ -156,7 +169,12 @@ export async function listTrips(client = globalThis.fetch) {
   }, [])
 }
 
-/** 路线反馈。后端尚未实现（501），失败静默，不打断演示 */
+/** 路线反馈。后端未定稿，失败静默，不打断演示。
+ *
+ * T8-4：后端返回 `{ ok, learned: [...] }`，`learned` 是这次真正落到的类目
+ * （归因失败时是空数组）。以前这里把它丢掉了，界面只能凭「按钮点过」变色 ——
+ * 那和「学到了」不是一件事。原样带出来，让界面按真实结果说话。
+ */
 export async function sendFeedback({ tripId, liked, mode, comment = '' }, client = globalThis.fetch) {
   return withFallback(async () => {
     const response = await withTimeout(client, buildUrl('/feedback'), {
@@ -164,9 +182,9 @@ export async function sendFeedback({ tripId, liked, mode, comment = '' }, client
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trip_id: tripId, liked, mode, comment }),
     })
-    await parse(response, '反馈提交失败')
-    return { ok: true }
-  }, { ok: false })
+    const data = await parse(response, '反馈提交失败')
+    return { ok: true, learned: Array.isArray(data?.learned) ? data.learned : [] }
+  }, { ok: false, learned: [] })
 }
 
 /**
@@ -178,7 +196,6 @@ export function createRecommendApi(client = globalThis.fetch) {
     recommendRoute: (payload) => recommendRoute(payload, client),
     checkHealth: () => checkHealth(client),
     suggestPlaces: (payload) => suggestPlaces(payload, client),
-    fetchPoiDetail: (poiId) => fetchPoiDetail(poiId, client),
     saveTrip: (payload) => saveTrip(payload, client),
     listTrips: () => listTrips(client),
     sendFeedback: (payload) => sendFeedback(payload, client),
@@ -191,7 +208,6 @@ export const defaultApi = {
   recommendRoute: (payload) => recommendRoute(payload),
   checkHealth: () => checkHealth(),
   suggestPlaces: (payload) => suggestPlaces(payload),
-  fetchPoiDetail: (poiId) => fetchPoiDetail(poiId),
   saveTrip: (payload) => saveTrip(payload),
   listTrips: () => listTrips(),
   sendFeedback: (payload) => sendFeedback(payload),

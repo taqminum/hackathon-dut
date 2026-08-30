@@ -35,6 +35,7 @@ describe('recommendRoute', () => {
       origin: '大连理工大学',
       destination: '星海广场',
       mode: '+15',
+      poi_count: 1,
     })
   })
 
@@ -45,24 +46,41 @@ describe('recommendRoute', () => {
     )
   })
 
-  it('keeps structured backend details on ambiguous place errors', async () => {
-    const detail = {
-      code: 'AMBIGUOUS_LOCATION',
-      location: '东港',
-      candidates: [{ name: '东港音乐喷泉广场', location: '121.6753,38.9307' }],
-    }
-    const api = createRecommendApi(async () => fail(409, detail))
-
-    await expect(api.recommendRoute({ origin: '东港', destination: '老虎滩' })).rejects.toMatchObject({
-      status: 409,
-      detail,
-    })
-  })
-
   it('throws a generic message when there is no detail', async () => {
     const api = createRecommendApi(async () => fail(500))
     await expect(api.recommendRoute({ origin: 'a', destination: 'b' })).rejects.toThrow(
       '推荐接口请求失败',
+    )
+  })
+
+  // T8-3：后端没起时 fetch 抛的是 `TypeError: Failed to fetch`，HomeView 会把
+  // err.message 原样印在红条上 —— 屏幕上就是一行英文，用户看不出是后端没起。
+  it('translates a dead backend into a readable chinese message', async () => {
+    const api = createRecommendApi(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(api.recommendRoute({ origin: 'a', destination: 'b' })).rejects.toThrow(
+      '连不上后端服务',
+    )
+  })
+
+  it('translates a timeout abort into a readable chinese message', async () => {
+    const api = createRecommendApi(async () => {
+      const error = new Error('This operation was aborted')
+      error.name = 'AbortError'
+      throw error
+    })
+    await expect(api.recommendRoute({ origin: 'a', destination: 'b' })).rejects.toThrow(
+      '请求超时',
+    )
+  })
+
+  // 翻译只能包传输层。后端的中文 detail 是写给用户看的，被盖成
+  // 「连不上后端服务」就等于把 404「未找到可行路线」说成了网络故障。
+  it('never overwrites a backend detail with the transport wording', async () => {
+    const api = createRecommendApi(async () => fail(404, '未找到可行路线'))
+    await expect(api.recommendRoute({ origin: 'a', destination: 'b' })).rejects.toThrow(
+      '未找到可行路线',
     )
   })
 })
@@ -99,20 +117,13 @@ describe('suggestPlaces', () => {
     )
 
     await expect(api.suggestPlaces({ keyword: '星海' })).resolves.toEqual([
-      {
-        name: '星海广场',
-        address: '沙河口区',
-        location: '121.5854,38.9325',
-        type: '',
-        coordinate_system: '',
-        confidence: null,
-      },
+      { id: '', name: '星海广场', address: '沙河口区', location: '121.5854,38.9325' },
     ])
   })
 
-  it('degrades to an empty list on failure', async () => {
+  it('surfaces a real suggestion service failure', async () => {
     const api = createRecommendApi(async () => fail(500))
-    await expect(api.suggestPlaces({ keyword: '星海' })).resolves.toEqual([])
+    await expect(api.suggestPlaces({ keyword: '星海' })).rejects.toThrow('地点联想失败')
   })
 })
 
@@ -130,20 +141,30 @@ describe('optional endpoints', () => {
     await expect(api.listTrips()).resolves.toEqual([])
   })
 
-  it('returns null when a poi detail is unavailable', async () => {
-    const api = createRecommendApi(async () => fail(404))
-    await expect(api.fetchPoiDetail('p1')).resolves.toBe(null)
-
-    const client = vi.fn()
-    const guard = createRecommendApi(client)
-    await expect(guard.fetchPoiDetail('')).resolves.toBe(null)
-    expect(client).not.toHaveBeenCalled()
-  })
-
   it('never throws from sendFeedback', async () => {
     const api = createRecommendApi(async () => {
       throw new Error('offline')
     })
-    await expect(api.sendFeedback({ liked: true, mode: '+5' })).resolves.toEqual({ ok: false })
+    // learned 恒为数组：界面按 learned.length 说话，undefined 会让它走到
+    // 「已记住」那一支去（`Array.isArray` 挡了一层，但两边都保持数组更省心）
+    await expect(api.sendFeedback({ liked: true, mode: '+5' })).resolves.toEqual({
+      ok: false,
+      learned: [],
+    })
+  })
+
+  // T8-4：后端 `/api/feedback` 返回的 `learned` 是「这次真的落到哪些类目」，
+  // 界面全靠它区分「已记住」和「没归因上」。丢掉这个字段等于让界面开始猜。
+  it('carries the learned categories through from the feedback endpoint', async () => {
+    const api = createRecommendApi(async () => ok({ ok: true, learned: ['咖啡', '餐饮'] }))
+    await expect(api.sendFeedback({ tripId: 4, liked: true, mode: '+15' })).resolves.toEqual({
+      ok: true,
+      learned: ['咖啡', '餐饮'],
+    })
+  })
+
+  it('reports nothing learned when the backend attributed nothing', async () => {
+    const api = createRecommendApi(async () => ok({ ok: true, learned: [] }))
+    await expect(api.sendFeedback({ liked: false })).resolves.toEqual({ ok: true, learned: [] })
   })
 })

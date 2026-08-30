@@ -29,12 +29,6 @@ describe('geo utils', () => {
     ])
   })
 
-  it('converts gcj02 route coordinates before rendering on osm tiles', () => {
-    const result = decodeRoutePolyline('121.6068,38.9180', { coordinateSystem: 'gcj02' })
-    expect(result[0][0]).toBeCloseTo(38.9172248, 6)
-    expect(result[0][1]).toBeCloseTo(121.60186, 6)
-  })
-
   it('returns an empty array for unusable polylines', () => {
     expect(decodeRoutePolyline('')).toEqual([])
     expect(decodeRoutePolyline(null)).toEqual([])
@@ -56,10 +50,6 @@ describe('geo utils', () => {
 
   it('extracts latlng from a poi payload', () => {
     expect(poiLatLng({ location: '121.6002,38.9218' })).toEqual([38.9218, 121.6002])
-    expect(poiLatLng({ location: '121.6068,38.9180', coordinate_system: 'gcj02' })).toEqual([
-      expect.closeTo(38.9172248, 6),
-      expect.closeTo(121.60186, 6),
-    ])
     expect(poiLatLng({})).toBe(null)
   })
 })

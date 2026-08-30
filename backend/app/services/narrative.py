@@ -1,73 +1,139 @@
 import os
+
 import requests
 
+from app.services.dalian import scenario_key
+
 DEFAULT_NARRATIVE = "这条路线上有几个值得停留的小地方，适合慢慢走。"
+# key 与 route_engine.DALIAN_SCENARIOS / poi_explorer.DALIAN_POI_SCENARIOS 共用
+# dalian.scenario_key：三张表一起改，不会只改一张导致叙事悄悄退回默认文案。
 DALIAN_SCENARIO_NARRATIVES = {
-    "121.6068,38.9180->121.5854,38.9325": {
-        "+5": "海边路线更长，但能顺路看一家安静的小店。",
-        "+15": "从大工沿海边走，你会先遇到一间社区咖啡，再顺着海景走到星海。",
-        "roam": "把最短路线先放一边，试试先往海边靠，再慢慢往星海走。",
+    scenario_key("dut", "xinghai"): {
+        "+5": "沿西南路走，顺路能拐进一家海鲜烧烤，几分钟的代价换一顿饭的可能。",
+        "+15": "从大工出发先过软件园，路边有咖啡可以带一杯，再一路向南走到星海广场。",
+        "roam": "把最短路线放一边：先沿软件园慢慢走，再顺着海的方向靠近星海。",
     },
-    "121.6753,38.9307->121.6746,38.8784": {
-        "+5": "从东港音乐喷泉广场出发，沿海岸线向南走到老虎滩。",
-        "+15": "这段路会把东港海面和老虎滩一带串起来，更适合慢慢走。",
-        "roam": "从东港音乐喷泉广场到老虎滩海洋公园，路线重点放在海边视野和沿途停留感。",
+    scenario_key("donggang", "laohutan"): {
+        "+5": "稍微绕到中南路一侧，路过一家全羊馆，视野也比主路开阔。",
+        "+15": "从东港沿海岸往南，中途能歇个脚，最后走到老虎滩的海边。",
+        "roam": "这条更像漫游：商务区、海岸线和老虎滩的渔家馆子会依次出现。",
     },
-    "121.5899,38.9148->121.6075,38.9094": {
-        "+5": "只多走几分钟，但可能遇到更适合停留的小店。",
-        "+15": "西安路到傅家庄之间，有一小段更适合慢慢逛。",
-        "roam": "先慢后远，适合在城区与海岸之间随意切换。",
+    scenario_key("xianlu", "fujiazhuang"): {
+        "+5": "只多走几分钟，中途会经过一家韩式小馆。",
+        "+15": "西安路往南穿过星海广场再折向傅家庄，中段最适合慢慢逛。",
+        "roam": "先在城区绕一段，再顺着海岸走向傅家庄，快慢自己切换。",
     },
 }
 
 
-def generate_narrative(route_data: dict, mode: str) -> str:
+def generate_narrative(
+    route_data: dict,
+    mode: str,
+    pois: list | None = None,
+    origin: str | None = None,
+    destination: str | None = None,
+) -> str:
+    """这条路线的一句话叙事。
+
+    优先级：LLM -> 手写的演示文案 -> 用真实 POI 填的模板 -> 通用兜底句。
+    模板那一层是关键：拿到了真实店名却还说「有几个值得停留的小地方」，
+    等于把这个产品最有说服力的部分丢掉了。
+
+    `origin` / `destination` 传的是**用户请求的**坐标。命中手写文案要靠它们，
+    不能只靠折线首尾点：高德会把起点吸附到最近的路上，实测东港那条返回的首点
+    是 121.6786,38.9286，而地标 key 是 121.6785,38.9287 —— 4 位小数差一个单位
+    （约 11 米）就匹配不上，手写文案会静默退回模板。
+    """
     base_url = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL")
 
     if not base_url or not model:
-        return _dalian_narrative(route_data, mode) or DEFAULT_NARRATIVE
+        return _fallback_narrative(route_data, mode, pois, origin, destination)
 
     payload = {
         "model": model,
-        "prompt": f"请根据路线数据生成一段探索叙事：{route_data}，模式：{mode}",
+        "prompt": _build_prompt(route_data, mode, pois),
         "stream": False,
     }
 
     try:
         response = requests.post(base_url, json=payload, timeout=10)
         response.raise_for_status()
-        data = response.json()
-
-        if "choices" in data and data["choices"]:
-            message = data["choices"][0].get("message", {})
-            if isinstance(message, dict):
-                content = message.get("content")
-                if content:
-                    return content
-
-        if "response" in data:
-            return data["response"]
-    except (TimeoutError, requests.RequestException):
+        content = _extract_content(response.json())
+        if content:
+            return content
+    # 响应是合法 JSON 但结构不对时，取字段会抛 AttributeError / TypeError /
+    # KeyError / IndexError。叙事是锦上添花，绝不能因为它让主接口 500，
+    # 所以这里连结构异常一起吃掉，落到兜底文案。
+    except (TimeoutError, requests.RequestException, AttributeError, TypeError, KeyError, IndexError, ValueError):
         pass
 
-    return _dalian_narrative(route_data, mode) or DEFAULT_NARRATIVE
+    return _fallback_narrative(route_data, mode, pois, origin, destination)
 
 
-def _dalian_narrative(route_data: dict, mode: str) -> str | None:
-    polyline = route_data.get("polyline", "")
-    coordinates = [point for point in str(polyline).split(";") if point]
+def _fallback_narrative(
+    route_data: dict,
+    mode: str,
+    pois: list | None,
+    origin: str | None = None,
+    destination: str | None = None,
+) -> str:
+    # 三组演示路线的手写文案比模板更自然，优先用它。
+    return (
+        _dalian_narrative(route_data, mode, origin, destination)
+        or _template_narrative(pois, mode)
+        or DEFAULT_NARRATIVE
+    )
 
-    if len(coordinates) < 2:
+
+def _build_prompt(route_data: dict, mode: str, pois: list | None) -> str:
+    names = [name for name, _ in _poi_highlights(pois)]
+    highlight = f"，沿途亮点：{'、'.join(names)}" if names else ""
+    return f"请根据路线数据生成一段探索叙事：{route_data}，模式：{mode}{highlight}"
+
+
+def _extract_content(data) -> str | None:
+    """从 LLM 响应里取正文。兼容 OpenAI 风格的 choices 和 Ollama 风格的 response。
+
+    每一层都要判类型：实测 `choices` 可能是字符串、元素可能是 null，
+    直接 `data["choices"][0].get(...)` 会抛异常。
+    """
+    if not isinstance(data, dict):
         return None
 
-    origin = _normalize(coord=coordinates[0])
-    destination = _normalize(coord=coordinates[-1])
-    if not origin or not destination:
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+            # 有些实现把正文直接放在 choices[0].text
+            text = first.get("text")
+            if isinstance(text, str) and text.strip():
+                return text
+
+    response_text = data.get("response")
+    if isinstance(response_text, str) and response_text.strip():
+        return response_text
+
+    return None
+
+
+def _dalian_narrative(
+    route_data: dict,
+    mode: str,
+    origin: str | None = None,
+    destination: str | None = None,
+) -> str | None:
+    start, end = _match_endpoints(route_data, origin, destination)
+    if not start or not end:
         return None
 
-    route_key = f"{origin}->{destination}"
-    reverse_key = f"{destination}->{origin}"
+    route_key = f"{start}->{end}"
+    reverse_key = f"{end}->{start}"
 
     selected = DALIAN_SCENARIO_NARRATIVES.get(route_key) or DALIAN_SCENARIO_NARRATIVES.get(reverse_key)
 
@@ -78,8 +144,123 @@ def _dalian_narrative(route_data: dict, mode: str) -> str | None:
     return selected.get(selected_mode)
 
 
+def _match_endpoints(
+    route_data: dict,
+    origin: str | None,
+    destination: str | None,
+) -> tuple[str, str]:
+    """拿来匹配手写文案的起终点，4 位小数。
+
+    优先用调用方给的请求坐标；没给时退回路线自带的 origin/destination
+    （兜底路线有这两个字段），最后才用折线首尾点。
+    """
+    candidates = (
+        (origin, destination),
+        (route_data.get("origin"), route_data.get("destination")),
+    )
+    for start, end in candidates:
+        normalized_start, normalized_end = _normalize(start), _normalize(end)
+        if normalized_start and normalized_end:
+            return normalized_start, normalized_end
+
+    coordinates = [point for point in str(route_data.get("polyline", "")).split(";") if point]
+    if len(coordinates) < 2:
+        return "", ""
+    return _normalize(coordinates[0]), _normalize(coordinates[-1])
+
+
 def _normalize(coord: str | None) -> str:
     if not coord:
         return ""
-    lng, lat = str(coord).split(",", 1)
-    return f"{float(lng):.4f},{float(lat):.4f}"
+    try:
+        lng, lat = str(coord).split(",", 1)
+        return f"{float(lng):.4f},{float(lat):.4f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+# 按模式给的句式。真实店名和类别填进去，比通用兜底句具体得多。
+#
+# 每个模式给单个和多个两种句式：api.py 只把**被选中的那一个** POI 交给叙事
+# （`pois=[chosen["poi"]]`），所以真实数据下永远只有一个名字。「依次经过 A、B」
+# 这种复数句式在线上根本不可达，拿一个名字去填会读成「会依次经过某家店」。
+#
+# 为什么不把沿线所有 POI 都传进来凑复数：那些点并不在最终路线上，说「顺路会
+# 经过」就是假的 —— 卖「偶遇」的产品不能在这句话上注水。
+MODE_TEMPLATES = {
+    "+5": {
+        "one": "只多花几分钟，顺路就能拐去{highlight}，值得看一眼。",
+        "many": "只多花几分钟，顺路会经过{highlight}，值得拐进去看一眼。",
+    },
+    "+15": {
+        "one": "这条路会带你去{highlight}，多走一段换来的东西比时间值钱。",
+        "many": "这条路上会依次经过{highlight}，多走一段换来的东西比时间值钱。",
+    },
+    "roam": {
+        "one": "把最短路线放一边：慢慢走去{highlight}，快慢自己决定。",
+        "many": "把最短路线放一边：慢慢走过{highlight}，快慢自己决定。",
+    },
+}
+
+# 高德 type 串（`餐饮服务;咖啡厅;咖啡厅`）太技术，转成人话再进文案。
+TYPE_LABELS = (
+    ("咖啡", "咖啡馆"),
+    ("海鲜", "海鲜馆子"),
+    ("烧烤", "烧烤店"),
+    ("面包", "面包店"),
+    ("甜品", "甜品店"),
+    ("茶", "茶饮店"),
+    ("快餐", "小馆"),
+    ("中餐", "馆子"),
+    ("外国餐", "餐厅"),
+    ("餐饮", "吃饭的地方"),
+    ("公园", "公园"),
+    ("广场", "广场"),
+    ("风景", "景点"),
+    ("博物", "博物馆"),
+    ("书店", "书店"),
+    ("购物", "店"),
+)
+
+
+def _template_narrative(pois: list | None, mode: str) -> str | None:
+    """用真实 POI 填模板。没有可用 POI 时返回 None，交给通用兜底句。"""
+    highlights = _poi_highlights(pois)
+    if not highlights:
+        return None
+
+    phrases = [f"{name}（{label}）" if label else name for name, label in highlights]
+    templates = MODE_TEMPLATES.get(mode) or MODE_TEMPLATES["+5"]
+    template = templates["one"] if len(phrases) == 1 else templates["many"]
+    return template.format(highlight="、".join(phrases))
+
+
+def _poi_highlights(pois: list | None, limit: int = 2) -> list[tuple[str, str]]:
+    """取前若干个可用 POI 的 (店名, 人话类别)。脏数据一律跳过。"""
+    highlights: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for poi in pois or []:
+        if not isinstance(poi, dict):
+            continue
+        name = poi.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        highlights.append((name, _type_label(poi.get("type"))))
+        if len(highlights) >= limit:
+            break
+
+    return highlights
+
+
+def _type_label(poi_type) -> str:
+    if not isinstance(poi_type, str):
+        return ""
+    for keyword, label in TYPE_LABELS:
+        if keyword in poi_type:
+            return label
+    return ""

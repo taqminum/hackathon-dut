@@ -50,6 +50,12 @@ describe('format utils', () => {
     expect(formatScore(6.5)).toBe('6.5')
     expect(formatScore('7')).toBe('7.0')
     expect(formatScore(null)).toBe('--')
+    // T5：传了 max 就必须 clamp，否则界面会印出「7.2/7」
+    expect(formatScore(7.2, 7)).toBe('7.0')
+    expect(formatScore(6.4, 7)).toBe('6.4')
+    expect(formatScore(-1, 7)).toBe('0.0')
+    // 不传 max 保持原值，别的调用方不受影响
+    expect(formatScore(9)).toBe('9.0')
   })
 
   it('maps score to a clamped percentage', () => {
@@ -57,6 +63,13 @@ describe('format utils', () => {
     expect(scoreToPercent(20, 10)).toBe(100)
     expect(scoreToPercent(-3, 10)).toBe(0)
     expect(scoreToPercent(null)).toBe(0)
+  })
+
+  // 原来所有用例都显式传 max，默认值没人钉住，于是它悄悄停在 10，
+  // 而 ScoreMeter 已经改成 7 —— 满分路线只能填到 70%。这里钉住默认值。
+  it('defaults max to the scorer reachable ceiling', () => {
+    expect(scoreToPercent(7)).toBe(100)
+    expect(scoreToPercent(3.5)).toBe(50)
   })
 
   it('cycles through the three primary colors', () => {

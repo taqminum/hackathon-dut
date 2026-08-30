@@ -64,8 +64,16 @@
   --bh-track-title: -0.02em;
 
   --bh-transition: 120ms linear;
-  --bh-z-overlay: 50;
-  --bh-z-dropdown: 30;
+
+  /* R1：这两个值必须留在 Leaflet 的 pane 之上。Leaflet 自建的 pane 从 200 起
+     （tile 200 / overlay 400 / marker 600 / popup 700 / control 800），
+     原来 overlay=50、dropdown=30 都在 200 以下，于是地图**永远**盖住 sticky
+     header —— 滚到重叠处「返回首页」按钮点不到。抬到 800 以上而不是去改
+     Leaflet 内部 pane：那是它的布局契约，改了 popup 和缩放控件会互相打架。
+     dropdown 900 < overlay 1000，保证 PlaceInput 的联想下拉压住地图，
+     但仍在 header 之下。 */
+  --bh-z-dropdown: 900;
+  --bh-z-overlay: 1000;
 
   /* 内容最大宽度 */
   --bh-max: 1120px;

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import ExploreModeSelector from '../components/ExploreModeSelector.vue'
 import PlaceInput from '../components/PlaceInput.vue'
 import StateBlock from '../components/StateBlock.vue'
@@ -25,25 +25,34 @@ const mode = computed({
   set: (value) => emit('update:modelValue', value),
 })
 
+// R2：输入框里显示什么。快速体验/历史记录填的是**地名**，坐标另存在
+// originCoord 里 —— 以前这里直接塞坐标串，于是框里是 `121.6785,38.9287`。
+// 上一轮 T1 修的是结果页标题（走 originLabel 兜底），首页输入框没跟着修，
+// 所以出现了「标题对了、输入框还是坐标」。
 const origin = ref('')
 const destination = ref('')
+// R2：提交时优先用的坐标。后端对坐标串支持最好（见 PlaceInput 的注释），
+// 所以显示地名不等于丢掉坐标：两者并存，payload 取坐标。
+// 手输入或从下拉选中都会把它清掉（那两种情况下 origin 自己就是要发的值）。
+const originCoord = ref('')
+const destinationCoord = ref('')
+// T1：人类可读的地名，只用于显示。发给后端的值由 originCoord/origin 决定，
+// 不能被标签污染 —— 那两个字段有坐标不变量，smoke 也钉着它们。
+const originLabel = ref('')
+const destinationLabel = ref('')
+const poiCount = ref(1)
+const POI_COUNTS = [
+  { value: 1, label: '绕 1 个地方', caption: '重点停一站' },
+  { value: 2, label: '绕 2 个地方', caption: '一条线串两站' },
+  { value: 3, label: '绕 3 个地方', caption: '完整探索路线' },
+]
 const loading = ref(false)
 const error = ref('')
 const touched = ref(false)
 const history = ref([])
-const placeConfirm = ref(null)
-const selectedOrigin = ref(null)
-const selectedDestination = ref(null)
 
-const originConfirmed = computed(() => isCoordString(origin.value) || !!selectedOrigin.value)
-const destinationConfirmed = computed(() => isCoordString(destination.value) || !!selectedDestination.value)
 const canSubmit = computed(
-  () =>
-    !loading.value &&
-    originConfirmed.value &&
-    destinationConfirmed.value &&
-    !!origin.value.trim() &&
-    !!destination.value.trim(),
+  () => !loading.value && !!origin.value.trim() && !!destination.value.trim(),
 )
 
 const originInvalid = computed(() => touched.value && !origin.value.trim())
@@ -53,6 +62,45 @@ function swap() {
   const previous = origin.value
   origin.value = destination.value
   destination.value = previous
+  // 标签要跟着值一起换，否则交换后标题会把「星海广场」标到大工的坐标上
+  const previousLabel = originLabel.value
+  originLabel.value = destinationLabel.value
+  destinationLabel.value = previousLabel
+  // R2：坐标也是三元组的一部分，漏了它交换后会拿另一头的坐标去查
+  const previousCoord = originCoord.value
+  originCoord.value = destinationCoord.value
+  destinationCoord.value = previousCoord
+}
+
+/** 手输入时标签失效：用户输的是地名就用原文当标签，是坐标则没有标签。
+ * 从下拉选中会走 onPick 覆盖掉这里的值。
+ *
+ * R2：手输入同时让 originCoord 失效 —— 用户把「大连理工大学」改成「东港」之后，
+ * 再拿大工的坐标去提交就是查了个用户没要的地方。 */
+function onOriginInput(next) {
+  originLabel.value = isCoordString(next) ? '' : next.trim()
+  originCoord.value = ''
+}
+
+function onDestinationInput(next) {
+  destinationLabel.value = isCoordString(next) ? '' : next.trim()
+  destinationCoord.value = ''
+}
+
+/** PlaceInput 选中某项：输入框里现在是地名（R3 改的），坐标从 option 里取。
+ *
+ * 触发顺序是 `update:modelValue` 先、`pick` 后，所以 onOriginInput 会先把
+ * originCoord 清成空串、把 originLabel 设成地名，这里再把坐标补回去。
+ * 顺序反了就会「选了门店但发的是门店名」，依赖的是 PlaceInput.choose 的 emit 次序。
+ */
+function onOriginPick(option) {
+  originLabel.value = option?.name || ''
+  originCoord.value = isCoordString(option?.location) ? option.location : ''
+}
+
+function onDestinationPick(option) {
+  destinationLabel.value = option?.name || ''
+  destinationCoord.value = isCoordString(option?.location) ? option.location : ''
 }
 
 /**
@@ -64,11 +112,6 @@ function swap() {
 async function handleSubmit(modeOverride) {
   touched.value = true
   error.value = ''
-  placeConfirm.value = null
-
-  if (!canSubmit.value) {
-    return
-  }
 
   if (!origin.value.trim() || !destination.value.trim()) {
     error.value = '请先填写起点和终点'
@@ -83,12 +126,27 @@ async function handleSubmit(modeOverride) {
     const override = typeof modeOverride === 'string' ? modeOverride : ''
 
     const payload = {
-      origin: origin.value.trim(),
-      destination: destination.value.trim(),
+      // R2：坐标优先。输入框里显示的是地名（`origin`），但后端对坐标串支持最好，
+      // 所以快速体验/历史记录带来的坐标要盖过显示值。手输入过就没有坐标了，
+      // 此时直接发地名，后端走 geocode。
+      origin: (originCoord.value || origin.value).trim(),
+      destination: (destinationCoord.value || destination.value).trim(),
       mode: override || mode.value,
+      poiCount: poiCount.value,
+      // T1：只用于显示。后端不认这两个字段（Body(..., embed=True) 逐字段取值，
+      // 多余的键会被忽略），所以带上它们不会破坏请求。
+      originLabel: originLabel.value.trim(),
+      destinationLabel: destinationLabel.value.trim(),
     }
 
-    const result = await api.recommendRoute(payload)
+    // 显式只发三个字段：标签是展示用的，不进请求体。
+    // 靠 recommendRoute 内部解构来过滤是隐性依赖，改那边就会把标签漏给后端。
+    const result = await api.recommendRoute({
+      origin: payload.origin,
+      destination: payload.destination,
+      mode: payload.mode,
+      poiCount: payload.poiCount,
+    })
 
     if (!result?.route) {
       error.value = '未找到推荐路线，请调整起终点后重试'
@@ -98,49 +156,54 @@ async function handleSubmit(modeOverride) {
     history.value = pushHistory({ ...payload })
     emit('select', { ...result, request: payload })
   } catch (err) {
-    if (err?.status === 409 && err?.detail?.code === 'AMBIGUOUS_LOCATION') {
-      const field = err.detail.location === origin.value.trim() ? 'origin' : 'destination'
-      placeConfirm.value = {
-        field,
-        candidates: Array.isArray(err.detail.candidates) ? err.detail.candidates : [],
-        mode: typeof modeOverride === 'string' ? modeOverride : mode.value,
-      }
-      error.value = ''
-      return
-    }
     error.value = err?.message || '获取路线失败，请稍后重试'
   } finally {
     loading.value = false
   }
 }
 
-function chooseConfirmedPlace(candidate) {
-  if (!placeConfirm.value || !candidate?.location) return
-  if (placeConfirm.value.field === 'origin') {
-    selectedOrigin.value = candidate
-    origin.value = candidate.location
-  } else {
-    selectedDestination.value = candidate
-    destination.value = candidate.location
-  }
-  const nextMode = placeConfirm.value.mode
-  placeConfirm.value = null
-  return handleSubmit(nextMode)
-}
-
-function fillDemo(newOrigin, newDestination, newMode) {
-  origin.value = newOrigin
-  destination.value = newDestination
+/** labels 可选：演示场景与历史记录都带地名，手动调用时不传就按输入内容推断。
+ *
+ * R2：带 labels 时输入框显示地名，原来的坐标存进 originCoord 供提交用。
+ * 不带 labels 时（手动调用、或历史记录没存地名）退回原行为：输入框就是要发的值。
+ */
+function fillDemo(newOrigin, newDestination, newMode, labels = null) {
   mode.value = newMode
+  // 标签在提交前就要落定：payload 在 handleSubmit 里组装，晚一帧就来不及了
+  if (labels) {
+    originLabel.value = labels.origin || ''
+    destinationLabel.value = labels.destination || ''
+    // 有地名就显示地名，坐标退到 originCoord。地名缺失的那一头保持原值，
+    // 免得输入框空着让人以为没填。
+    origin.value = labels.origin || newOrigin
+    destination.value = labels.destination || newDestination
+    originCoord.value = labels.origin && isCoordString(newOrigin) ? newOrigin : ''
+    destinationCoord.value =
+      labels.destination && isCoordString(newDestination) ? newDestination : ''
+  } else {
+    origin.value = newOrigin
+    destination.value = newDestination
+    onOriginInput(newOrigin)
+    onDestinationInput(newDestination)
+  }
   return handleSubmit(newMode)
 }
 
 function applyScenario(scenario) {
-  return fillDemo(scenario.origin, scenario.destination, scenario.mode)
+  // T1：DEMO_SCENARIOS 本来就带 originLabel / destinationLabel，
+  // 以前这里只传坐标，地名在源头就被丢掉了，结果页只能显示经纬度。
+  return fillDemo(scenario.origin, scenario.destination, scenario.mode, {
+    origin: scenario.originLabel,
+    destination: scenario.destinationLabel,
+  })
 }
 
 function applyHistory(item) {
-  return fillDemo(item.origin, item.destination, item.mode || mode.value)
+  poiCount.value = Number(item.poiCount) || 1
+  return fillDemo(item.origin, item.destination, item.mode || mode.value, {
+    origin: item.originLabel,
+    destination: item.destinationLabel,
+  })
 }
 
 function removeHistory() {
@@ -148,26 +211,6 @@ function removeHistory() {
 }
 
 const suggest = (payload) => api.suggestPlaces(payload)
-
-watch(origin, (next) => {
-  if (selectedOrigin.value && next !== (selectedOrigin.value.location || selectedOrigin.value.name)) {
-    selectedOrigin.value = null
-  }
-})
-watch(destination, (next) => {
-  if (selectedDestination.value && next !== (selectedDestination.value.location || selectedDestination.value.name)) {
-    selectedDestination.value = null
-  }
-})
-
-const unconfirmedMessage = computed(() => {
-  if (!touched.value) return ''
-  const parts = []
-  if (origin.value.trim() && !isCoordString(origin.value) && !selectedOrigin.value) parts.push('起点')
-  if (destination.value.trim() && !isCoordString(destination.value) && !selectedDestination.value) parts.push('终点')
-  if (!parts.length) return ''
-  return `请先从联想结果中选择准确的${parts.join('和')}，或输入坐标`
-})
 
 onMounted(() => {
   history.value = loadHistory()
@@ -208,7 +251,8 @@ defineExpose({ handleSubmit, fillDemo })
             :disabled="loading"
             :invalid="originInvalid"
             :suggest-fn="suggest"
-            @pick="selectedOrigin = $event"
+            @update:model-value="onOriginInput"
+            @pick="onOriginPick"
           />
           <button
             type="button"
@@ -228,13 +272,27 @@ defineExpose({ handleSubmit, fillDemo })
             :disabled="loading"
             :invalid="destinationInvalid"
             :suggest-fn="suggest"
-            @pick="selectedDestination = $event"
+            @update:model-value="onDestinationInput"
+            @pick="onDestinationPick"
           />
         </div>
 
         <ExploreModeSelector v-model="mode" :disabled="loading" />
 
-        <p v-if="unconfirmedMessage" class="bh-notice bh-notice--error" role="alert">{{ unconfirmedMessage }}</p>
+        <fieldset class="home__stop-count">
+          <legend class="bh-label">这次想绕几个地方</legend>
+          <div class="home__stop-options">
+            <label
+              v-for="option in POI_COUNTS"
+              :key="option.value"
+              :class="['home__stop-option', { 'home__stop-option--active': poiCount === option.value }]"
+            >
+              <input v-model="poiCount" type="radio" :value="option.value" :disabled="loading" />
+              <strong>{{ option.label }}</strong>
+              <span>{{ option.caption }}</span>
+            </label>
+          </div>
+        </fieldset>
 
         <button type="submit" class="bh-btn bh-btn--primary bh-btn--lg bh-btn--block" :disabled="!canSubmit">
           {{ loading ? '正在规划…' : '生成偶遇路线' }}
@@ -246,24 +304,6 @@ defineExpose({ handleSubmit, fillDemo })
           title="正在寻找可控的意外…"
           message="正在比较候选路线、计算绕行成本并挑选沿途亮点。"
         />
-        <div v-else-if="placeConfirm" class="place-confirm" role="alert">
-          <p class="place-confirm__title">
-            {{ placeConfirm.field === 'origin' ? '起点信息不足，请重新选择一个准确的起点' : '终点信息不足，请重新选择一个准确的终点' }}
-          </p>
-          <div class="place-confirm__list">
-            <button
-              v-for="candidate in placeConfirm.candidates"
-              :key="`${candidate.name}-${candidate.location}`"
-              type="button"
-              class="place-confirm__option"
-              @click="chooseConfirmedPlace(candidate)"
-            >
-              <span class="place-confirm__name">{{ candidate.name }}</span>
-              <span class="place-confirm__meta">{{ candidate.address || candidate.type }}</span>
-              <span class="bh-mono place-confirm__coord">{{ candidate.location }}</span>
-            </button>
-          </div>
-        </div>
         <p v-else-if="error" class="bh-notice bh-notice--error" role="alert">{{ error }}</p>
       </form>
 
@@ -298,7 +338,9 @@ defineExpose({ handleSubmit, fillDemo })
         <ul class="history">
           <li v-for="item in history" :key="`${item.origin}-${item.destination}-${item.mode}`">
             <button type="button" class="history__item" :disabled="loading" @click="applyHistory(item)">
-              <span class="bh-mono history__pair">{{ item.origin }} → {{ item.destination }}</span>
+              <span class="history__pair" :class="{ 'bh-mono': !item.originLabel && !item.destinationLabel }">
+                {{ item.originLabel || item.origin }} → {{ item.destinationLabel || item.destination }}
+              </span>
               <span class="history__mode">{{ findMode(item.mode).label }}</span>
             </button>
           </li>
@@ -417,45 +459,49 @@ defineExpose({ handleSubmit, fillDemo })
   box-shadow: none;
 }
 
-.place-confirm {
+.home__stop-count {
   display: grid;
   gap: var(--bh-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.home__stop-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--bh-3);
+}
+
+.home__stop-option {
+  display: grid;
+  gap: var(--bh-1);
   padding: var(--bh-3);
   border: var(--bh-line) solid var(--bh-ink);
-  background: var(--bh-paper-2);
-}
-
-.place-confirm__title {
-  margin: 0;
-  font-weight: 800;
-}
-
-.place-confirm__list {
-  display: grid;
-  gap: var(--bh-2);
-}
-
-.place-confirm__option {
-  display: grid;
-  gap: 2px;
-  padding: var(--bh-3);
-  border: 2px solid var(--bh-ink);
   background: var(--bh-white);
-  text-align: left;
+  cursor: pointer;
 }
 
-.place-confirm__option:hover {
-  background: var(--bh-yellow);
+.home__stop-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.place-confirm__name {
-  font-weight: 800;
+.home__stop-option strong {
+  font-size: var(--bh-text-sm);
 }
 
-.place-confirm__meta,
-.place-confirm__coord {
+.home__stop-option span {
   font-size: var(--bh-text-xs);
   color: var(--bh-ink-soft);
+}
+
+.home__stop-option--active {
+  transform: translate(-2px, -2px);
+  background: var(--bh-yellow);
+  box-shadow: var(--bh-shadow-sm);
 }
 
 /* ---------- 分区 ---------- */
@@ -595,6 +641,9 @@ defineExpose({ handleSubmit, fillDemo })
     margin-top: 0;
     justify-self: end;
   }
+
+  .home__stop-options {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
-
