@@ -26,7 +26,6 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./tests/setup.js'],
-    // 浏览器冒烟脚本与假后端由 node 直接运行，不走 vitest
-    exclude: ['node_modules/**', 'dist/**', 'tests/smoke.mjs', 'tests/mock-server.mjs'],
+    exclude: ['node_modules/**', 'dist/**'],
   },
 })

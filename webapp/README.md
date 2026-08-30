@@ -13,12 +13,6 @@ npm run dev          # http://localhost:5173
 开发时 `/api` 与 `/health` 都会代理到 `http://localhost:8000`。
 后端未启动也能打开页面，顶栏会显示“后端未连接”。
 
-没有后端时可以用内置假后端联调：
-
-```bash
-npm run mock         # 在另一个终端，监听 8000
-```
-
 ## 构建
 
 ```bash
@@ -32,16 +26,9 @@ npm run preview      # 预览构建产物（同样代理 /api 与 /health）
 npm run test:run     # 单元测试 / 组件测试（vitest）
 ```
 
-浏览器级验证需要先起假后端与 dev server（或 preview）：
-
-```bash
-npm run mock &
-npm run dev &
-npm run smoke -- http://localhost:5173          # 首页到结果页的完整流程
-npm run audit:design -- http://localhost:5173    # 风格约束、布局溢出、对比度
-```
-
-`smoke` 会把截图写到指定目录（默认 `/tmp/shots`）。
+浏览器级验证只连接真实后端：先启动 `backend` 的 Uvicorn 和 `npm run dev`，再运行
+`npm run audit:design -- http://localhost:5173`。没有高德 Key 或真实后端不可用时，
+不以假数据替代。
 
 ## 目录结构
 
@@ -57,8 +44,6 @@ src/
   utils/                 坐标、格式化、历史记录
 tests/
   *.test.js              vitest 用例
-  mock-server.mjs        本地假后端
-  smoke.mjs              浏览器冒烟脚本
   design-audit.mjs       设计与可访问性审计
 ```
 
