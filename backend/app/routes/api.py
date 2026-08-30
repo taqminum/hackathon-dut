@@ -14,7 +14,7 @@ from app.services.coord import gcj02_str_to_wgs84_str
 from app.services.detour_calculator import calculate_detour
 from app.services.geocoder import normalize_coordinate, resolve_location
 from app.services.narrative import DEFAULT_NARRATIVE, generate_narrative
-from app.services.poi_explorer import explore_pois_along_route
+from app.services.poi_explorer import explore_pois_along_route, poi_fit_score
 from app.services.route_engine import (
     SOURCE_AMAP,
     SOURCE_FALLBACK,
@@ -278,8 +278,14 @@ def _collect_highlights(chosen: dict, pois: list) -> list[dict]:
         seen.add(identity)
         nearby.append((distance, {**poi, "off_route_meters": distance}))
 
-    # 先按评分挑「值得说」的，同分再按贴近路线的程度破平。
-    nearby.sort(key=lambda item: (-_normalize_rating(item[1].get("rating", 0)), item[0]))
+    # 先按贴题度挑「值得说」的，再看评分，最后按贴近路线的程度破平。
+    nearby.sort(
+        key=lambda item: (
+            -poi_fit_score(item[1].get("type")),
+            -_normalize_rating(item[1].get("rating", 0)),
+            item[0],
+        )
+    )
     highlights.extend(poi for _distance, poi in nearby[: MAX_RETURNED_POIS - 1])
     return highlights
 
@@ -352,7 +358,7 @@ def _preliminary_poi_quality(poi: dict) -> tuple[float, int, str]:
     quality = rating if rating > 0 else 3.8
     poi_type = str(poi.get("type") or "")
     non_commercial = int(any(word in poi_type for word in ("风景", "公园", "博物", "文化", "美术")))
-    return quality, non_commercial, str(poi.get("name") or "")
+    return quality + 0.25 * poi_fit_score(poi_type), non_commercial, str(poi.get("name") or "")
 
 
 def _evaluate_candidate(
@@ -469,7 +475,8 @@ def _metadata_candidates(pois: list, baseline: dict) -> list[dict]:
                     detour_minutes=0,
                     poi_quality=quality,
                     tag_affinity=preferences.affinity(poi.get("type")),
-                ),
+                )
+                + 0.3 * poi_fit_score(poi.get("type")),
             }
         )
     return candidates
@@ -488,7 +495,8 @@ def _choose_candidate(candidates: list[dict], mode: str) -> dict | None:
     记一笔排序代价：`+5` 偏向贴着路线的地方，`roam` 只看分。**返回给前端的 score
     不受影响**（那是探索价值，7 分制），这笔代价只活在排序键里。
 
-    并列时用绕行少的那个破平，保证结果稳定、不依赖候选顺序。
+    并列时用绕行少的那个破平；仍并列再按离线距离和名字排序，
+    保证结果稳定、不依赖并发线程的完成顺序。
     """
     if not candidates:
         return None
@@ -499,7 +507,11 @@ def _choose_candidate(candidates: list[dict], mode: str) -> dict | None:
         off_route = item.get("off_route_meters")
         # 算不出距离时按最大惩罚处理：位置说不清的店不该因为「距离未知」占到便宜。
         penalty = appetite * (POI_SEARCH_RADIUS if off_route is None else off_route) / 100
-        return (item["score"] - penalty, -item["detour_minutes"])
+        # 同分同绕行时，评分相同的地点先比离线距离（远点更符合 roam 的探索感），
+        # 再比名字，杜绝 max 依赖线程完成顺序的隐性随机。
+        farther_first = off_route if off_route is not None else 0.0
+        name = str(item.get("poi", {}).get("name") or "")
+        return (item["score"] - penalty, -item["detour_minutes"], farther_first, name)
 
     return max(candidates, key=rank)
 

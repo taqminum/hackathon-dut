@@ -18,6 +18,7 @@ from app.routes.api import (
     _choose_candidate,
     _collect_highlights,
     _evaluate_candidates,
+    _prepare_poi_candidates,
 )
 from app.services.dalian import landmark
 from app.services.poi_explorer import explore_pois_along_route
@@ -66,8 +67,8 @@ def test_nearby_threshold_keeps_markers_on_the_route(pair, mode):
     这条断言的是**独立算出来的**距离，上限也是写死的 —— 引用 `NEARBY_POI_METERS`
     的话，把那个常量调回 400 会让断言的上限一起放宽，守卫形同虚设（实测全绿）。
 
-    破坏验证：`NEARBY_POI_METERS` 改回 400，xianlu→fujiazhuang 那个 181 米的
-    钱库里海鲜就会重新进列表，这条变红。
+    破坏验证：`NEARBY_POI_METERS` 改回 400，xianlu→fujiazhuang 那个 196 米的
+    傅家庄公共海滩就会重新进列表，这条变红。
     """
     highlights, route = _highlights(*map(landmark, pair), mode)
     assert highlights, f"{pair} @{mode} 兜底演示数据必须给出亮点"
@@ -160,3 +161,33 @@ def test_highlight_without_a_measurable_distance_is_dropped():
     }
 
     assert _collect_highlights(chosen, []) == []
+
+
+def test_highlights_prefer_on_theme_pois_over_higher_rated_dining():
+    chosen = {
+        "poi": {"name": "途经咖啡馆", "type": "餐饮服务;咖啡厅;咖啡厅", "location": "121.5200,38.8850"},
+        "route": {"polyline": "121.5197,38.8856;121.5205,38.8851"},
+    }
+    pois = [
+        {"name": "高分烧烤店", "type": "餐饮服务;中餐厅;烧烤", "rating": 4.9,
+         "location": "121.5201,38.8851"},
+        {"name": "路边书店", "type": "购物服务;专卖店;书店", "rating": 4.2,
+         "location": "121.5202,38.8851"},
+    ]
+
+    highlights = _collect_highlights(chosen, pois)
+
+    assert [poi["name"] for poi in highlights] == ["途经咖啡馆", "路边书店", "高分烧烤店"]
+
+
+def test_prepare_poi_candidates_prefers_on_theme_pois_with_close_ratings():
+    pois = [
+        {"name": "高分烧烤店", "type": "餐饮服务;中餐厅;烧烤", "rating": 4.6,
+         "location": "121.5200,38.8850", "navigation_location": "121.5200,38.8850"},
+        {"name": "沿途公园", "type": "风景名胜;公园广场;公园", "rating": 4.5,
+         "location": "121.5201,38.8851", "navigation_location": "121.5201,38.8851"},
+    ]
+
+    prepared = _prepare_poi_candidates(pois)
+
+    assert [item[0]["name"] for item in prepared] == ["沿途公园", "高分烧烤店"]

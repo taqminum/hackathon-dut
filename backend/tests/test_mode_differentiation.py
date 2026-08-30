@@ -197,6 +197,20 @@ def test_modes_do_not_all_pick_the_same_pois(pair):
     assert all(picks.values()), picks
 
 
+def test_xianlu_modes_pick_distinct_pois_with_monotonic_offsets():
+    """西安路→傅家庄三个模式必须真的走向不同的点，而不是同一个咖啡馆。"""
+    results = {mode: _recommend("xianlu", "fujiazhuang", mode) for mode in MODES}
+    picks = {mode: result["poi"]["name"] for mode, result in results.items()}
+
+    assert len(set(picks.values())) == 3, picks
+
+    offsets = {
+        mode: point_to_route_meters(result["poi"]["location"], result["baseline"]["polyline"])
+        for mode, result in results.items()
+    }
+    assert offsets["roam"] > offsets["+15"] > offsets["+5"], offsets
+
+
 def test_detour_appetite_orders_the_modes_and_never_touches_the_reported_score():
     """appetite 只活在排序键里，不能渗进返回给前端的 score。
 

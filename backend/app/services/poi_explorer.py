@@ -52,6 +52,31 @@ EXCLUDED_TYPE_KEYWORDS = (
     "医药",
 )
 
+# 类别偏好只影响排序，不负责过滤：普通餐饮仍保留，但贴题的风景/人文/书店/咖啡
+# 候选在排序里获得加成，避免满屏都是高分烧烤、海鲜店。
+FIT_REWARD_KEYWORDS = (
+    "风景",
+    "公园",
+    "广场",
+    "博物",
+    "书店",
+    "咖啡",
+    "艺术",
+    "文化",
+    "历史",
+    "文创",
+)
+COMMON_DINING_PENALTY_KEYWORDS = (
+    "中餐厅",
+    "烧烤",
+    "火锅",
+    "海鲜",
+    "快餐",
+    "小吃",
+    "面馆",
+    "自助",
+)
+
 
 def explore_pois_along_route(
     origin: str,
@@ -78,8 +103,9 @@ def explore_pois_along_route(
     if not allow_fallback:
         return []
 
-    fallback = _dalian_fallback_pois(origin, destination) or []
-    return [poi for poi in fallback if any(t in poi.get("type", "") for t in types)]
+    # 断网兜底表是高德实测后人工挑好的贴题地点；type 串和请求侧模糊词（餐饮/景点/购物）
+    # 不是同一套词表，这里若再按 types 复筛，会把「风景名胜」一整类都砍掉。
+    return _dalian_fallback_pois(origin, destination) or []
 
 
 def _sample_points(
@@ -202,7 +228,10 @@ def _query_samples(
             existing = merged.get(key)
             if existing is None or poi["rating"] > existing["rating"]:
                 merged[key] = poi
-    return list(merged.values())
+    merged_pois = list(merged.values())
+    # 稳定排序：同分保持采样/合并顺序，只有贴题度不同才改变先后。
+    merged_pois.sort(key=lambda poi: poi_fit_score(poi.get("type", "")), reverse=True)
+    return merged_pois
 
 
 def _query_around(
@@ -393,6 +422,18 @@ def _is_worth_recommending(poi_type: str, rating: float) -> bool:
     return not any(keyword in poi_type for keyword in EXCLUDED_TYPE_KEYWORDS)
 
 
+def poi_fit_score(poi_type) -> float:
+    """贴题度：风景/人文/书店/咖啡加分，普通餐饮减分，其余为 0。"""
+    if not isinstance(poi_type, str):
+        return 0.0
+    score = 0.0
+    if any(keyword in poi_type for keyword in FIT_REWARD_KEYWORDS):
+        score += 0.4
+    if any(keyword in poi_type for keyword in COMMON_DINING_PENALTY_KEYWORDS):
+        score -= 0.3
+    return score
+
+
 # 断网兜底的沿线亮点。key 与 route_engine.DALIAN_SCENARIOS 共用 dalian.scenario_key，
 # 所以不会出现「路线表改了、POI 表没改」的静默退化。
 # 店名、type、rating、location 全部来自高德实测（location 已转成 WGS-84），
@@ -400,50 +441,57 @@ def _is_worth_recommending(poi_type: str, rating: float) -> bool:
 DALIAN_POI_SCENARIOS = {
     scenario_key("dut", "xinghai"): [
         {
-            "name": "香海金波海鲜烧烤(西南路店)",
-            "type": "餐饮服务;中餐厅;海鲜酒楼",
-            "distance": "70",
-            "rating": 4.6,
-            "location": "121.554782,38.887539",
-        },
-        {
             "name": "瑞幸咖啡(大连软件园22号楼店)",
             "type": "餐饮服务;咖啡厅;咖啡厅",
             "distance": "7",
             "rating": 4.3,
             "location": "121.539956,38.887705",
         },
+        {
+            "name": "星海广场",
+            "type": "风景名胜;公园广场;城市广场",
+            "distance": "46",
+            "rating": 4.8,
+            "location": "121.582977,38.881249",
+        },
     ],
     scenario_key("donggang", "laohutan"): [
         {
-            "name": "蒙亘花·呼盟全羊(中南路店)",
-            "type": "餐饮服务;中餐厅;特色/地方风味餐厅",
-            "distance": "32",
-            "rating": 4.6,
-            "location": "121.671643,38.888473",
+            "name": "炮台山遗址",
+            "type": "风景名胜;风景名胜;风景名胜",
+            "distance": "166",
+            "rating": 4.3,
+            "location": "121.670429,38.909576",
         },
         {
-            "name": "老虎滩船说",
-            "type": "餐饮服务;中餐厅;海鲜酒楼",
-            "distance": "7",
-            "rating": 4.5,
-            "location": "121.672093,38.888650",
+            "name": "猫的天空之城概念书店(大连东方水城店)",
+            "type": "购物服务;专卖店;书店",
+            "distance": "478",
+            "rating": 4.6,
+            "location": "121.681764,38.924796",
         },
     ],
     scenario_key("xianlu", "fujiazhuang"): [
         {
-            "name": "钱库里海鲜自助(星海广场店)",
-            "type": "餐饮服务;中餐厅;中餐厅",
-            "distance": "179",
-            "rating": 4.7,
-            "location": "121.588223,38.883247",
+            "name": "The House Cafe&Bar",
+            "type": "餐饮服务;咖啡厅;咖啡厅",
+            "distance": "60",
+            "rating": 4.5,
+            "location": "121.588943,38.893912",
         },
         {
-            "name": "森垚韩小馆",
-            "type": "餐饮服务;中餐厅;中餐厅",
-            "distance": "128",
-            "rating": 4.6,
-            "location": "121.588400,38.899552",
+            "name": "跨海大桥观景点",
+            "type": "风景名胜;风景名胜相关;旅游景点",
+            "distance": "94",
+            "rating": 4.8,
+            "location": "121.604156,38.871526",
+        },
+        {
+            "name": "银沙滩公园",
+            "type": "风景名胜;风景名胜;海滩",
+            "distance": "188",
+            "rating": 4.8,
+            "location": "121.607835,38.868495",
         },
     ],
 }

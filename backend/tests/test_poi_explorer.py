@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from app.services.coord import gcj02_str_to_wgs84_str
-from app.services.poi_explorer import explore_pois_along_route
+from app.services.poi_explorer import explore_pois_along_route, poi_fit_score
 
 
 def test_explore_pois_along_route_trusts_server_side_type_filter():
@@ -30,6 +30,58 @@ def test_explore_pois_along_route_trusts_server_side_type_filter():
 
     assert [poi["name"] for poi in pois] == ["A", "B"]
     mock_get.assert_called_once()
+
+
+def test_poi_fit_score_rewards_on_theme_and_penalizes_common_dining():
+    assert poi_fit_score("风景名胜;公园广场;公园") > 0
+    assert poi_fit_score("餐饮服务;咖啡厅;咖啡厅") > 0
+    assert poi_fit_score("购物服务;专卖店;书店") > 0
+    assert poi_fit_score("餐饮服务;中餐厅;海鲜酒楼") < 0
+    assert poi_fit_score("餐饮服务;中餐厅;烧烤") < 0
+    assert poi_fit_score("") == 0.0
+    assert poi_fit_score(None) == 0.0
+
+
+def test_explore_pois_along_route_orders_on_theme_before_rating():
+    """真实数据里高分烧烤店仍保留，但贴题地点排到它前面。"""
+    with patch("app.services.poi_explorer.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "pois": [
+                {"type": "餐饮服务;中餐厅;烧烤", "name": "高分烧烤", "distance": "30",
+                 "location": "120.1,30.2", "biz_ext": {"rating": "4.8"}},
+                {"type": "风景名胜;公园广场;公园", "name": "沿途公园", "distance": "120",
+                 "location": "120.1,30.2", "biz_ext": {"rating": "4.5"}},
+                {"type": "餐饮服务;咖啡厅;咖啡厅", "name": "路边咖啡", "distance": "60",
+                 "location": "120.1,30.2", "biz_ext": {"rating": "4.4"}},
+            ]
+        }
+
+        with patch.dict("os.environ", {"AMAP_KEY": "fake-key"}):
+            pois = explore_pois_along_route(
+                "116.397428,39.90923", "116.407526,39.90403", ["餐饮", "景点"], 300
+            )
+
+    assert [poi["name"] for poi in pois] == ["沿途公园", "路边咖啡", "高分烧烤"]
+
+
+def test_fallback_pois_skip_local_type_refilter():
+    """断网兜底表不该再被请求侧模糊词砍掉风景 POI。
+
+    本地 types 传的是「餐饮/景点/购物」，而兜底表里的 type 串来自高德实测分类
+    （风景名胜;...），两套词表对不上；一旦回到旧的 `types` 复筛，刚换成贴题
+    风景点的演示路线又会只剩一家咖啡店。
+    """
+    from app.services.dalian import landmark
+
+    with patch.dict("os.environ", {}, clear=True):
+        pois = explore_pois_along_route(
+            landmark("xianlu"), landmark("fujiazhuang"), ["餐饮"], 300
+        )
+
+    names = [poi["name"] for poi in pois]
+    assert "跨海大桥观景点" in names
+    assert "银沙滩公园" in names
 
 
 SCENIC_TYPE_STRINGS = (

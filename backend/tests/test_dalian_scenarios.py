@@ -55,6 +55,17 @@ def test_fallback_pois_sit_close_to_their_scenario_polyline():
             assert nearest < 500, f"{poi['name']} 距兜底折线 {nearest:.0f} 米"
 
 
+def test_fallback_pois_are_on_theme_not_ordinary_dining():
+    """演示路线不该推荐满屏烧烤/海鲜：兜底 POI 必须是有贴题度的地点。"""
+    from app.services.poi_explorer import poi_fit_score
+
+    for key, pois in DALIAN_POI_SCENARIOS.items():
+        for poi in pois:
+            assert poi_fit_score(poi["type"]) > 0, (
+                f"{poi['name']} 不是贴题的风景/人文/书店/咖啡地点: {poi['type']}"
+            )
+
+
 def test_landmark_coordinates_are_inside_dalian():
     for slug, (name, lng, lat) in LANDMARKS.items():
         assert 121.0 < lng < 122.5, (slug, name, lng)
