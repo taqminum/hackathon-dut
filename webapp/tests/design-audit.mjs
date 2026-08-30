@@ -1,6 +1,6 @@
 /**
  * 设计与可用性审计：读取真实浏览器里的计算样式，验证包豪斯风格约束与布局健康度。
- * 需要先启动 mock 后端与 vite（见 smoke.mjs 注释）。
+ * 需要先启动真实后端与 Vite。
  * 用法： node tests/design-audit.mjs [baseUrl]
  */
 import { chromium } from 'playwright'
