@@ -1,0 +1,41 @@
+# 排除本地环境与调试文件, 减小镜像体积
+.git
+.github
+docs
+output
+scripts
+temp_patch.py
+read_hackathon.py
+read_manual.py
+*.pdf
+*.log
+
+# Python
+backend/.venv
+backend/.venv-codex
+backend/.pytest_cache
+backend/__pycache__
+backend/**/__pycache__
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/diag_*.py
+backend/debug_*.py
+backend/check_amap.py
+backend/eval_*.py
+backend/find_pois.py
+backend/query_pois.py
+backend/show_pois*.py
+backend/temp_*.py
+backend/tmp_*.py
+backend/test_live_manual.py
+backend/found_pois.json
+backend/tmp_req.json
+backend/server-uvicorn*.log
+backend/tests/debug_*.py
+
+# Node
+webapp/node_modules
+webapp/dist
+webapp/.vite
+webapp/.output
